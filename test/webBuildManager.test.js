@@ -120,9 +120,10 @@ test('progress follows own report and only a verified successful exit is complet
   const runDir = path.join(rootDir, '.runtime/builds/test-run')
   await fs.mkdir(runDir, { recursive: true })
   child.stdout.write(JSON.stringify({ runDir }) + '\n')
-  await fs.writeFile(path.join(runDir, 'status.json'), JSON.stringify({ completed: 4, currentLayer: 63, layers: [{ y: 63 }], connectedBots: 5, activeWorkers: 3 }))
+  await fs.writeFile(path.join(runDir, 'status.json'), JSON.stringify({ status: 'waiting-natural-generation', completed: 4, currentLayer: 63, layers: [{ y: 63 }], connectedBots: 5, activeWorkers: 3 }))
   const running = (await manager.snapshot()).job
   assert.equal(running.progress.completed, 4)
+  assert.equal(running.progress.phase, 'waiting-natural-generation')
   assert.equal(running.progress.connectedBots, 5)
   assert.equal(running.progress.completedLayers, 1)
   await fs.writeFile(path.join(runDir, 'report.json'), JSON.stringify({ status: 'verified', completed: 10, layers: [{ y: 63 }, { y: 64 }, { y: 65 }], connectedBots: 5, elapsedSeconds: 12 }))

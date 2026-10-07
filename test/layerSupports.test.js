@@ -132,6 +132,26 @@ test('source fluids get temporary same-layer click references without requiring 
   assert.ok(supports.every(task => task.pos.y === 64 && key(task.pos) !== key(pos(3))))
 })
 
+test('a generated bubble column satisfies only its matching physical source-water target', () => {
+  const { resolveState } = require('../lib/strictSchematic')
+  const water = resolveState('water', { level: 0 }, '1.21.11')
+  const bubble = resolveState('bubble_column', { drag: false }, '1.21.11')
+  const task = { ...target(3, 0, 'water'), state: water.stateId, generatedTarget: { name: 'bubble_column', state: bubble.stateId } }
+  const observed = [[pos(3), bubble]]
+  assert.deepEqual(plan([task], observed, { getTargetBlock: () => water }), [])
+  const wrongDrag = resolveState('bubble_column', { drag: true }, '1.21.11')
+  assert.throws(() => plan([task], [[pos(3), wrongDrag]], { getTargetBlock: () => water }), error => error.code === 'LAYER_SUPPORT_UNREACHABLE')
+  assert.throws(() => plan([{ ...task, generatedTarget: undefined }], observed, { getTargetBlock: () => water }), error => error.code === 'LAYER_SUPPORT_UNREACHABLE')
+  assert.throws(() => plan([{ ...task, generatedTarget: { name: 'lava', state: bubble.stateId } }], observed, { getTargetBlock: () => water }), error => error.code === 'LAYER_SUPPORT_UNREACHABLE')
+})
+
+test('fire requires permanent floor support instead of a disposable side reference', () => {
+  for (const name of ['fire', 'soul_fire']) {
+    assert.throws(() => plan([target(3, 0, name)], [[pos(2), solid]]), error => error.code === 'LAYER_SUPPORT_ATTACHMENT')
+    assert.deepEqual(plan([target(3, 0, name)], [[pos(3, 63), { ...solid, name: name === 'fire' ? 'netherrack' : 'soul_sand' }]]), [])
+  }
+})
+
 test('a supported comparator is a selectable click reference for its enclosed neighbor', () => {
   const comparator = { ...target(1, 0, 'comparator'), block: { name: 'comparator', boundingBox: 'block', shapes: [[0, 0, 0, 1, 0.125, 1]] } }
   const task = target(0)

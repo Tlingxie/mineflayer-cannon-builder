@@ -1124,13 +1124,53 @@ test('source-water cache prediction without raw acknowledgement halts instead of
 })
 
 test('fluid fences refuse intermediate collision-only geometry even when that local ray misses it', async () => {
-  for (const name of ['redstone_wire', 'soul_sand', 'honey_block', 'scaffolding', 'hopper']) {
+  for (const name of ['redstone_wire', 'honey_block', 'scaffolding', 'hopper']) {
     const f = waterloggedSlabFixture({ existing: false })
     const overhead = f.pos.offset(0, 2, 0)
     f.bot.entity.pitch = -Math.PI / 2
     f.cells.set(overhead.toString(), f.block(name, overhead))
     await assert.rejects(f.executor.fenceFluid(f.task, f.pos, 1), /unproven selection shape/)
     assert.equal(f.events.some(row => row[0] === 'bucket'), false)
+  }
+})
+
+test('soul sand uses its full vanilla outline while retaining the lower collision surface', () => {
+  const f = fixture('water', { level: '0' })
+  const support = f.pos.offset(0, -1, 0)
+  const sand = f.block('soul_sand', support)
+  f.cells.set(support.toString(), sand)
+  f.bot.world.raycast = require('prismarine-world/src/worldsync').prototype.raycast
+  assert.deepEqual(sand.shapes, [[0, 0, 0, 1, 14 / 16, 1]])
+  assert.deepEqual(f.executor.selectionShapes(sand), [[0, 0, 0, 1, 1, 1]])
+  const hit = f.executor.selectionRaycast(support.offset(-1, 15 / 16, 0.5), new Vec3(1, 0, 0), 4.5)
+  assert.ok(hit?.position.equals(support), 'outline must block rays through the gap above the collision surface')
+  assert.deepEqual(sand.shapes, [[0, 0, 0, 1, 14 / 16, 1]], 'flight collisions must remain unchanged')
+  assert.ok(f.executor.makeGoal(f.task).facesPos.every(([, point]) => point.y === support.y + 1))
+})
+
+test('source water on soul sand uses the proven top outline and still requires the readonly world fence', async () => {
+  for (const verified of [true, false]) {
+    const f = fixture('water', { level: '0' })
+    const support = f.pos.offset(0, -1, 0)
+    const sand = f.block('soul_sand', support)
+    f.cells.set(support.toString(), sand)
+    f.bot.world.raycast = require('prismarine-world/src/worldsync').prototype.raycast
+    let fences = 0
+    let buckets = 0
+    f.build.verifyFluidRay = async blocks => {
+      fences++
+      assert.ok(blocks.some(row => row.pos.equals(support) && row.stateId === sand.stateId))
+      return { verified, checked: blocks.length }
+    }
+    f.bot.activateItem = () => {
+      buckets++
+      f.cells.set(f.pos.toString(), f.block('water', f.pos, { level: '0' }))
+      f.bot._client.emit('block_change', { location: f.pos, type: f.wanted.stateId })
+    }
+    if (verified) assert.equal(await f.executor.perform(f.task, { layer: 5 }), true)
+    else await assert.rejects(f.executor.perform(f.task, { layer: 5 }), /Incomplete fluid ray world fence/)
+    assert.equal(fences, 1)
+    assert.equal(buckets, verified ? 1 : 0)
   }
 })
 
@@ -1201,6 +1241,141 @@ test('scaffolding references use secondary placement for both side and top faces
     assert.equal(clicks, 1)
     assert.equal(f.bot.controlState.sneak, false)
   }
+})
+
+function generatedBubbleFixture ({ drag = false, acknowledge = true, actualDrag = drag } = {}) {
+  const f = fixture('water', { level: '0' })
+  const source = f.block('bubble_column', f.pos, { drag })
+  f.task.name = 'water'
+  f.task.generatedTarget = { name: 'bubble_column', state: source.stateId }
+  f.cells.set(f.pos.offset(0, -1, 0).toString(), f.block('stone', f.pos.offset(0, -1, 0)))
+  f.bot.world.raycast = require('prismarine-world/src/worldsync').prototype.raycast
+  f.bot.activateItem = () => {
+    f.events.push(['bucket', f.bot.heldItem.name])
+    const actual = f.block('bubble_column', f.pos, { drag: actualDrag })
+    f.cells.set(f.pos.toString(), actual)
+    if (acknowledge) f.bot._client.emit('block_change', { location: f.pos, type: actual.stateId })
+    f.bot.emit('test-bucket')
+  }
+  return f
+}
+
+test('source-water tasks accept only their declared natural bubble target through bucket acknowledgement', async () => {
+  for (const drag of [false, true]) {
+    const f = generatedBubbleFixture({ drag })
+    assert.equal(await f.executor.perform(f.task, { layer: 5 }), true)
+    assert.deepEqual(f.events.filter(event => event[0] === 'bucket'), [['bucket', 'water_bucket']])
+    assert.equal(await f.executor.perform(f.task, { layer: 5 }), true)
+    assert.equal(f.events.filter(event => event[0] === 'bucket').length, 1)
+    assert.equal(f.events.some(event => event[0] === 'dig'), false)
+  }
+})
+
+test('existing wrong-direction or undeclared bubble columns are refused without digging or pouring', async () => {
+  for (const declared of [false, true]) {
+    const f = generatedBubbleFixture()
+    if (!declared) delete f.task.generatedTarget
+    f.cells.set(f.pos.toString(), f.block('bubble_column', f.pos, { drag: true }))
+    await assert.rejects(f.executor.perform(f.task, { layer: 5 }), /bubble column/i)
+    assert.equal(f.events.some(event => ['dig', 'bucket'].includes(event[0])), false)
+  }
+})
+
+test('predicted bubbles or wrong-direction raw updates cannot acknowledge a source-water placement', async () => {
+  for (const options of [{ acknowledge: false }, { actualDrag: true }]) {
+    const f = generatedBubbleFixture(options)
+    const controller = new AbortController()
+    f.bot.once('test-bucket', () => controller.abort())
+    await assert.rejects(f.executor.perform(f.task, { layer: 5, signal: controller.signal }), { code: 'FLUID_OUTCOME_UNKNOWN' })
+    await assert.rejects(f.executor.perform(f.task, { layer: 5 }), { code: 'FLUID_OUTCOME_UNKNOWN' })
+    assert.equal(f.events.filter(event => event[0] === 'bucket').length, 1)
+  }
+})
+
+test('a fluid fence treats a bubble column as transparent while retaining the server ray-state fence', async () => {
+  const f = waterloggedSlabFixture({ existing: false })
+  const overhead = f.pos.offset(0, 2, 0)
+  f.bot.entity.pitch = -Math.PI / 2
+  f.cells.set(overhead.toString(), f.block('bubble_column', overhead, { drag: false }))
+  let fenced = false
+  f.build.verifyFluidRay = async blocks => {
+    fenced = true
+    assert.ok(blocks.some(row => row.pos.equals(overhead)))
+    return { verified: true, checked: blocks.length }
+  }
+  assert.equal((await f.executor.fenceFluid(f.task, f.pos, 1)).fence.verified, true)
+  assert.equal(fenced, true)
+})
+
+function fireFixture (name, support, { acknowledge = true } = {}) {
+  const f = fixture(name)
+  f.task.name = name
+  f.cells.set(f.pos.offset(0, -1, 0).toString(), f.block(support, f.pos.offset(0, -1, 0)))
+  f.bot.world.raycast = require('prismarine-world/src/worldsync').prototype.raycast
+  f.bot._genericPlace = async (reference, face) => {
+    f.events.push(['ignite', f.bot.heldItem.name, reference.position.clone(), face.clone()])
+    const actual = f.block(name, f.pos)
+    f.cells.set(f.pos.toString(), actual)
+    if (acknowledge) f.bot._client.emit('block_change', { location: f.pos, type: actual.stateId })
+    f.bot.emit('test-ignite')
+  }
+  return f
+}
+
+test('fire targets use flint and steel on only the proper lower support top with raw acknowledgement', async () => {
+  for (const [name, support] of [['fire', 'netherrack'], ['soul_fire', 'soul_sand'], ['soul_fire', 'soul_soil']]) {
+    const f = fireFixture(name, support)
+    assert.equal(await f.executor.perform(f.task, { layer: 5 }), true)
+    const actions = f.events.filter(event => event[0] === 'ignite')
+    assert.equal(actions.length, 1)
+    assert.equal(actions[0][1], 'flint_and_steel')
+    assert.ok(actions[0][2].equals(f.pos.offset(0, -1, 0)))
+    assert.ok(actions[0][3].equals(new Vec3(0, 1, 0)))
+    assert.equal(await f.executor.perform(f.task, { layer: 5 }), true)
+    assert.equal(f.events.filter(event => event[0] === 'ignite').length, 1)
+  }
+})
+
+test('fire rejects wrong bases, wrong reference faces and occupied targets without destructive retries', async () => {
+  for (const [name, support] of [['fire', 'stone'], ['fire', 'soul_sand'], ['soul_fire', 'netherrack']]) {
+    const f = fireFixture(name, support)
+    await assert.rejects(f.executor.perform(f.task, { layer: 5 }), /fire.*support|fire.*requires/i)
+    assert.equal(f.events.some(event => ['ignite', 'dig'].includes(event[0])), false)
+  }
+  const occupied = fireFixture('fire', 'netherrack')
+  occupied.cells.set(occupied.pos.toString(), occupied.block('stone', occupied.pos))
+  assert.equal(await occupied.executor.perform(occupied.task, { layer: 5 }), false)
+  assert.equal(occupied.events.some(event => ['ignite', 'dig'].includes(event[0])), false)
+  const side = fireFixture('fire', 'netherrack')
+  const reference = side.pos.offset(1, 0, 0)
+  side.cells.set(reference.toString(), side.block('netherrack', reference))
+  side.executor.reach = async () => {}
+  side.executor.makeGoal = () => ({ facesPos: [1], getFaceAndRef: () => ({ ref: reference, face: new Vec3(1, 0, 0), to: reference.offset(0, 0.5, 0.5) }) })
+  await assert.rejects(side.executor.perform(side.task, { layer: 5 }), /fire.*top|fire.*support/i)
+  assert.equal(side.events.some(event => event[0] === 'ignite'), false)
+})
+
+test('fire cache prediction without acknowledgement halts instead of reporting successful ignition', async () => {
+  const f = fireFixture('fire', 'netherrack', { acknowledge: false })
+  const controller = new AbortController()
+  f.bot.once('test-ignite', () => controller.abort())
+  await assert.rejects(f.executor.perform(f.task, { layer: 5, signal: controller.signal }), { code: 'MUTATION_OUTCOME_UNKNOWN' })
+  await assert.rejects(f.executor.perform(f.task, { layer: 5 }), { code: 'MUTATION_OUTCOME_UNKNOWN' })
+  assert.equal(f.events.filter(event => event[0] === 'ignite').length, 1)
+})
+
+test('fire placement stays in its active layer and cannot dispatch after the placement audit rejects it', async () => {
+  const f = fireFixture('fire', 'netherrack')
+  await assert.rejects(f.executor.perform(f.task, { layer: 6 }), /outside the active layer/)
+  f.executor.report = event => {
+    if (event.state !== 'placing') return
+    assert.ok(event.pos.equals(f.pos))
+    assert.equal(event.face, 1)
+    assert.equal(event.useItem, false)
+    throw new Error('Layer audit rejected ignition')
+  }
+  await assert.rejects(f.executor.perform(f.task, { layer: 5 }), /Layer audit rejected ignition/)
+  assert.equal(f.events.some(event => event[0] === 'ignite'), false)
 })
 
 test('powder snow supplies a selectable placement face without becoming a flight obstacle', () => {

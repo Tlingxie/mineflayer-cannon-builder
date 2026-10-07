@@ -7,7 +7,7 @@ const { LayerScheduler } = require('../lib/layerScheduler')
 const { planLayerSupports, createSupportCleanupTasks } = require('../lib/layerSupports')
 const { buildIdentity, loadRecovery } = require('../lib/buildRecovery')
 const { approachGoal } = require('../lib/physicalApproach')
-const { readPlan, resolveState, matchesTarget, dynamicProperties, createBuildContext, inspectPlan, preparePhysicalPlan } = require('../lib/strictSchematic')
+const { readPlan, resolveState, matchesTarget, matchesPhysicalTarget, dynamicProperties, createBuildContext, inspectPlan, preparePhysicalPlan } = require('../lib/strictSchematic')
 const AIR = new Set(['air', 'cave_air', 'void_air'])
 const RAILS = new Set(['rail', 'powered_rail', 'activator_rail', 'detector_rail'])
 const key = pos => `${pos.x},${pos.y},${pos.z}`
@@ -179,7 +179,8 @@ function updateVerificationMetrics (report, elapsedSeconds) {
   if (Number.isFinite(report.placementAttempts)) report.placementAttemptsPerSecond = report.placementAttempts / seconds
 }
 
-async function runLayeredBuild ({ plan, physicalPlan = preparePhysicalPlan(plan), workers, readBlock, options = {}, signal, report = {}, onEvent = () => {}, settleMs = 150, fillContainer = (...args) => require('../lib/physicalInventory').fillContainer(...args), afterLayer, afterLayerVerified, afterBuild, recovery, constructionPlan = recovery?.constructionPlan }) {
+async function runLayeredBuild ({ plan, physicalPlan = preparePhysicalPlan(plan), workers, readBlock, options = {}, signal, report = {}, onEvent = () => {}, settleMs = 150, naturalTimeoutMs = 120000, fillContainer = (...args) => require('../lib/physicalInventory').fillContainer(...args), afterLayer, afterLayerVerified, afterBuild, afterNaturalGeneration, recovery, constructionPlan = recovery?.constructionPlan }) {
+  if (!Number.isFinite(naturalTimeoutMs) || naturalTimeoutMs < 0) throw new Error('Invalid natural generation timeout')
   const selection = selectedPhysicalTasks(plan, physicalPlan, options.bottomLayers)
   const Block = require('prismarine-block')(plan.version)
   const dirt = resolveState('dirt', {}, plan.version)
@@ -190,7 +191,7 @@ async function runLayeredBuild ({ plan, physicalPlan = preparePhysicalPlan(plan)
   const selectedTop = Math.max(...selection.layers)
   const constructionLayers = [...new Set([...selection.layers, ...persistentTasks.filter(task => task.pos.y <= selectedTop).map(task => task.pos.y)])].sort((a, b) => a - b)
   for (const task of persistentTasks) allTargets.add(key(task.pos))
-  const wanted = new Map(plan.tasks.map(task => [task.state, Block.fromStateId(task.state, 0)]))
+  const wanted = new Map([...plan.tasks, ...selection.tasks].map(task => [task.state, Block.fromStateId(task.state, 0)]))
   wanted.set(dirt.stateId, dirt)
   const allSelected = plan.tasks.filter(task => selection.selected.has(task.pos.y))
   const active = new Set()
@@ -203,7 +204,7 @@ async function runLayeredBuild ({ plan, physicalPlan = preparePhysicalPlan(plan)
   for (const worker of workers) report.workers[worker.id] = { completed: 0, attempts: 0, errors: 0, state: 'ready', ...(report.workers[worker.id] || {}), position: worker.position }
   const emit = event => onEvent({ time: Date.now(), activeLayer: report.currentLayer, activeWorkers: active.size, ...event })
   const confirmedAir = pos => AIR.has(readBlock(pos)?.name) && workers.every(worker => !worker.executor.unconfirmedDigs?.has(key(pos)))
-  const isSatisfied = task => task.type === 'dig' ? confirmedAir(task.pos) : workers.every(worker => !worker.executor.unconfirmedWaterlogs?.has(key(task.pos))) && matchesTarget(wanted.get(task.state), readBlock(task.pos))
+  const isSatisfied = task => task.type === 'dig' ? confirmedAir(task.pos) : workers.every(worker => !worker.executor.unconfirmedWaterlogs?.has(key(task.pos))) && matchesPhysicalTarget(wanted.get(task.state), readBlock(task.pos), task)
   const checkAir = (layer, temporary = new Set()) => {
     for (const pos of plan.air) {
       if (pos.y !== layer || temporary.has(key(pos)) || owned.has(key(pos))) continue
@@ -396,10 +397,34 @@ async function runLayeredBuild ({ plan, physicalPlan = preparePhysicalPlan(plan)
       checkSignal(signal)
     }
     if (selection.completeBlueprint && owned.size) await cleanPersistent([...owned.values()], selection.tasks)
-    report.status = 'verifying'
     if (afterBuild) await afterBuild({ plan, workers, signal, report, readBlock, emit })
     await calibrateExistingRails({ tasks: selection.tasks, version: plan.version, workers, readBlock, signal, report, emit })
     if (plan.entities?.length && !afterLayer && !afterBuild) throw new Error('Final verification cannot complete: blueprint entities have not been handled')
+    report.status = 'verifying'
+    const bubbleTargets = selection.derived.filter(task => task.name === 'bubble_column')
+    let pendingBubbles = bubbleTargets.filter(task => !isSatisfied(task))
+    if (pendingBubbles.length) {
+      const deadline = Date.now() + naturalTimeoutMs
+      report.status = 'waiting-natural-generation'
+      report.derivedPending = pendingBubbles.map(task => task.id)
+      emit({ type: 'natural-generation-wait', phase: 'verification', pending: report.derivedPending, timeoutMs: naturalTimeoutMs })
+      while (pendingBubbles.length) {
+        checkSignal(signal)
+        pendingBubbles = bubbleTargets.filter(task => !isSatisfied(task))
+        report.derivedPending = pendingBubbles.map(task => task.id)
+        if (!pendingBubbles.length) break
+        const invalid = pendingBubbles.find(task => {
+          const block = readBlock(task.pos)
+          return block?.name !== 'water' || String(block.getProperties().level) !== '0'
+        })
+        if (invalid) throw new Error(`Bubble column natural generation failed at ${invalid.id}: expected a source water block or the specified bubble direction`)
+        if (Date.now() >= deadline) throw new Error(`气泡柱尚未自然生成（${pendingBubbles.length} 格）。水源已完成；若服务器冻结，请恢复游戏刻后使用原施工记录续建验收。`)
+        await sleep(100)
+      }
+      report.status = 'verifying'
+      emit({ type: 'natural-generation-complete', phase: 'verification', targets: bubbleTargets.length })
+      if (afterNaturalGeneration) await afterNaturalGeneration({ plan, workers, signal, report, readBlock, emit })
+    }
     if (settleMs) await sleep(Math.max(300, settleMs))
     checkSignal(signal)
     report.placementMismatches = allSelected.filter(task => !isSatisfied(task)).map(task => task.id)
@@ -690,11 +715,13 @@ function createMechanismHooks (plan, { selectedLayers = new Set(plan.layers), re
         }
       }
     },
-    async afterBuild ({ workers, signal, report, emit }) {
+    async afterBuild ({ workers, signal, report, emit, readOnly = false }) {
       checkSignal(signal)
       report.verificationBackend = verificationBackend.backend
       report.verificationEvidence = []
       const snapshot = verificationBackend.snapshot
+      const containers = plan.tasks.filter(task => selectedLayers.has(task.pos.y) && inventory.isContainerTask(task))
+      if (readOnly && !snapshot && (entities.length || containers.length)) throw new Error('Final checks after natural generation require a read-only snapshot; physical observation or container interaction is not allowed')
       const readSnapshot = async operation => {
         try {
           const result = await operation()
@@ -715,7 +742,7 @@ function createMechanismHooks (plan, { selectedLayers = new Set(plan.layers), re
         report.portalsDeferred = frames.length - ready.length
         portalPlan = ready.length ? { ...plan, tasks: plan.tasks.filter(task => task.name !== 'nether_portal' || readyPositions.has(key(task.pos))) } : null
       }
-      if (portalPlan) {
+      if (portalPlan && !readOnly) {
         report.status = 'igniting-portals'
         emit({ type: 'portals-start', phase: 'mechanism' })
         const result = await mechanisms.ignitePortals(workers, portalPlan, { signal })
@@ -733,7 +760,6 @@ function createMechanismHooks (plan, { selectedLayers = new Set(plan.layers), re
       if (!report.entityVerification.verified) throw new Error('Final live entity verification failed')
       report.entitiesVerified = report.entityVerification.entities
       report.status = 'verifying-containers'
-      const containers = plan.tasks.filter(task => selectedLayers.has(task.pos.y) && inventory.isContainerTask(task))
       await verifyBuildContents({
         tasks: containers,
         workers,
@@ -894,6 +920,7 @@ async function main (options = parseOptions()) {
     if (event.workerId && report.workers[event.workerId]) report.workers[event.workerId].position = workers.find(worker => worker.id === event.workerId)?.position
     if (event.type === 'task-retry' && event.error && event.error !== 'Waiting for support in the completed structure or current layer') console.log(`Retry ${event.taskId}: ${event.error}`)
     if (event.phase === 'layer' && (event.type === 'layer-start' || event.type === 'layer-complete')) console.log(`${event.type} y=${event.layer} blocks=${event.layerTotal} verified=${event.completed || 0}/${selected.tasks.length}`)
+    if (event.type === 'natural-generation-wait') console.log(`水源已逐层放好，正在等待 ${event.pending.length} 格气泡柱自然生成。若服务器冻结，请在控制台执行 tick unfreeze；当前只等待验收，不再放置方块（最多 ${event.timeoutMs / 1000} 秒）。`)
   }
   const started = Date.now()
   try {
@@ -955,7 +982,7 @@ async function main (options = parseOptions()) {
     }, 5000)
     report.status = 'staging'
     await stageWorkers(workers, plan, { signal: controller.signal, onEvent: recordEvent, minimumLayer: recovery?.highestLayer })
-    await runLayeredBuild({ plan, physicalPlan, workers, readBlock, options, signal: controller.signal, report, onEvent: recordEvent, recovery, constructionPlan, afterLayerVerified, ...mechanismHooks })
+    await runLayeredBuild({ plan, physicalPlan, workers, readBlock, options, signal: controller.signal, report, onEvent: recordEvent, recovery, constructionPlan, afterLayerVerified, ...mechanismHooks, afterNaturalGeneration: args => mechanismHooks.afterBuild({ ...args, readOnly: true }) })
     console.log(JSON.stringify({ status: report.status, bots: workers.length, peakActiveWorkers: report.peakActiveWorkers, blocks: report.blueprintBlocksVerified, resumedReadOnlyBlocks: report.resumedReadOnlyBlocks, freshVerifiedBlocks: report.freshVerifiedBlocks, freshVerifiedBlocksPerSecond: report.freshVerifiedBlocksPerSecond, placementAttempts: report.placementAttempts, layers: report.layers.length, seconds: report.buildSeconds, verifiedBlocksPerSecond: report.verifiedBlocksPerSecond, placementAttemptsPerSecond: report.placementAttemptsPerSecond, runDir }))
     return report
   } catch (error) {

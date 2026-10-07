@@ -10,7 +10,21 @@ async function inspect (filename, version) {
   const summary = inspectPlan(plan)
   selectedPhysicalTasks(plan, physical, Infinity, summary.issues)
   if (!physical.tasks.length) throw new Error('Blueprint has no directly placeable blocks')
-  const entities = normalizeMinecartEntities(plan, { frozen: true })
+  let entities
+  try {
+    entities = normalizeMinecartEntities(plan, { frozen: true })
+  } catch (error) {
+    if (error.message.startsWith('Unsupported entity:')) {
+      const unsupported = new Map()
+      for (const entity of plan.entities) {
+        const name = entity.data?.id?.replace(/^minecraft:/, '') || 'unknown'
+        if (!['minecart', 'chest_minecart', 'hopper_minecart'].includes(name)) unsupported.set(name, (unsupported.get(name) || 0) + 1)
+      }
+      const details = [...unsupported].map(([name, count]) => `${name === 'armor_stand' ? '盔甲架 (armor_stand)' : name} × ${count}`).join('、')
+      throw new Error(`方块检查已通过，但此蓝图还包含暂不支持自动装配的实体：${details}。尚未开始施工。`)
+    }
+    throw error
+  }
   findPortalFrames(plan)
   for (const task of plan.tasks) {
     if (task.blockEntity?.components && Object.keys(task.blockEntity.components).length) throw new Error('Unsupported block entity components')
@@ -21,7 +35,8 @@ async function inspect (filename, version) {
   const requiresAlignment = /Mk\.?6\.1\b/i.test(plan.name || '')
   if (requiresAlignment) warnings.push('此炮型的蓝图原点 X、Y、Z 都必须能被 16 整除。')
   if (requiresFrozen) warnings.push('包含流体或封闭矿车，需要服务器已处于冻结状态；网页不会自动冻结服务器。')
-  if (physical.derived.length) warnings.push(`${physical.derived.length} 个方块由门、活塞、流体或传送门自然生成；bot 主动放置仍严格按层。`)
+  if (physical.derived.length) warnings.push(`${physical.derived.length} 个自然生成验收目标；气泡柱位置仍逐层放置水源，最终验证原始方块和方向。`)
+  if (physical.derived.some(task => task.name === 'bubble_column')) warnings.push('水源搭好后等待气泡柱自然生成；冻结状态下会提示恢复游戏刻，网页不会自动解冻。')
   const top = new Map()
   for (const task of plan.tasks) {
     const key = `${task.pos.x},${task.pos.z}`

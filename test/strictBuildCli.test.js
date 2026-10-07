@@ -426,6 +426,74 @@ test('natural derived targets remain in final verification and cannot be declare
   assert.equal(env.history.some(event => event.pos === '0,65,0'), false)
 })
 
+test('bubble water is placed layer by layer then awaited as natural columns before final verification', async () => {
+  const plan = blueprint([[0, 64, 0, 'soul_sand'], [1, 64, 0, 'glass'], [0, 65, 0, 'bubble_column', { drag: false }], [1, 65, 0, 'glass'], [0, 66, 0, 'bubble_column', { drag: false }], [1, 66, 0, 'glass']])
+  const env = environment(plan)
+  const placed = []
+  const events = []
+  const finalization = []
+  const originalPerform = env.workers[0].executor.perform
+  for (const worker of env.workers) worker.executor.perform = async (task, settings) => { placed.push({ name: task.name, y: task.pos.y }); return originalPerform(task, settings) }
+  const report = await runLayeredBuild({
+    ...env,
+    settleMs: 0,
+    naturalTimeoutMs: 1000,
+    afterBuild: async () => { finalization.push('finish-mutations') },
+    afterNaturalGeneration: async () => { finalization.push('verify-natural-result') },
+    onEvent: event => {
+      events.push(event)
+      if (event.type === 'natural-generation-wait') {
+        assert.deepEqual(finalization, ['finish-mutations'])
+        finalization.push('wait')
+        assert.equal(env.readBlock(new Vec3(0, 65, 0)).name, 'water')
+        assert.equal(env.readBlock(new Vec3(0, 66, 0)).name, 'water')
+        for (const task of plan.tasks.filter(task => task.name === 'bubble_column')) env.world.set(task.id, Block.fromStateId(task.state, 0))
+      }
+    }
+  })
+  assert.equal(report.status, 'verified')
+  assert.equal(report.blueprintBlocksVerified, 6)
+  assert.equal(placed.some(task => task.name === 'bubble_column'), false)
+  assert.deepEqual(placed.filter(task => task.name === 'water').map(task => task.y), [65, 66])
+  assert.equal(events.filter(event => event.type === 'natural-generation-wait').length, 1)
+  assert.deepEqual(finalization, ['finish-mutations', 'wait', 'verify-natural-result'])
+})
+
+test('plain water and wrong-direction bubbles cannot pass the original blueprint final check', async () => {
+  const plan = blueprint([[0, 64, 0, 'soul_sand'], [0, 65, 0, 'bubble_column', { drag: false }]])
+  for (const replace of [null, resolveState('bubble_column', { drag: true })]) {
+    const env = environment(plan)
+    const report = {}
+    await assert.rejects(runLayeredBuild({
+      ...env,
+      report,
+      settleMs: 0,
+      naturalTimeoutMs: 0,
+      onEvent: event => { if (event.type === 'natural-generation-wait' && replace) env.world.set('0,65,0', replace) }
+    }), /bubble|natural|气泡|自然/i)
+    assert.equal(report.status, 'failed')
+    assert.equal(report.blueprintBlocksVerified, undefined)
+    assert.deepEqual(report.derivedPending, ['0,65,0'])
+  }
+})
+
+test('natural generation waiting is cancellable and never adds placement attempts', async () => {
+  const plan = blueprint([[0, 64, 0, 'soul_sand'], [0, 65, 0, 'bubble_column', { drag: false }]])
+  const env = environment(plan)
+  const controller = new AbortController()
+  let beforeCancel
+  await assert.rejects(runLayeredBuild({
+    ...env,
+    signal: controller.signal,
+    settleMs: 0,
+    afterNaturalGeneration: async () => assert.fail('Cancelled generation must not run final verification'),
+    onEvent: event => {
+      if (event.type === 'natural-generation-wait') { beforeCancel = env.history.length; controller.abort(new Error('cancel natural wait')) }
+    }
+  }), /cancel natural wait/)
+  assert.equal(env.history.length, beforeCancel)
+})
+
 test('container content is restored after placement, including explicitly empty inventories', async () => {
   assert.equal(typeof runLayeredBuild, 'function')
   const plan = blueprint([[0, 64, 0, 'dropper', {}, { Items: [{ Slot: 0, id: 'minecraft:shears', count: 1 }] }], [1, 64, 0, 'dropper', {}, { Items: [] }]])
@@ -511,6 +579,8 @@ test('mechanism hooks place carts on their rail layer and ignite portals only af
   await hooks.afterLayer({ ...context, layer: 64 })
   assert.deepEqual(calls, [['cart', 'cart']])
   await hooks.afterBuild(context)
+  assert.deepEqual(calls, [['cart', 'cart'], ['portal'], ['verify']])
+  await assert.rejects(hooks.afterBuild({ ...context, readOnly: true }), /read-only snapshot/)
   assert.deepEqual(calls, [['cart', 'cart'], ['portal'], ['verify']])
   assert.equal(report.entitiesVerified, 1)
   assert.equal(report.entityVerification.verified, true)
@@ -912,6 +982,7 @@ test('managed final verification records read-only commands without flying to or
   const plan = blueprint([[0, 64, 0, 'chest', {}, { Items: [] }]])
   const containerEvidence = { command: 'data get block 0 64 0', response: 'container snapshot' }
   const entityEvidence = { command: 'data get entity @e[type=minecraft:minecart,limit=1]', response: 'entity snapshot' }
+  let ignitions = 0
   const hooks = createMechanismHooks(plan, {
     recoveredEntities: [{ id: 'cart', verified: true, entityId: 5 }],
     verificationBackend: {
@@ -923,7 +994,7 @@ test('managed final verification records read-only commands without flying to or
     },
     mechanisms: {
       normalizeMinecartEntities: () => [{ id: 'cart', layer: 64 }],
-      ignitePortals: async () => ({ verified: true, portals: 0, blocks: 0 }),
+      ignitePortals: async () => { ignitions++; return { verified: true, portals: 0, blocks: 0 } },
       verifyMinecarts: async () => assert.fail('Physical entity observation should not run')
     },
     inventory: { isContainerTask: () => true, verifyContainer: async () => assert.fail('Container GUI should not open') }
@@ -931,6 +1002,8 @@ test('managed final verification records read-only commands without flying to or
   const report = {}
   const workers = [{ id: 'bot', position: new Vec3(0, 114, 0), bot: {}, executor: { interactionGoal: () => assert.fail('No physical approach for snapshot reads') } }]
   await hooks.afterBuild({ workers, signal: new AbortController().signal, report, emit: () => {} })
+  await hooks.afterBuild({ workers, signal: new AbortController().signal, report, emit: () => {}, readOnly: true })
+  assert.equal(ignitions, 1)
   assert.equal(report.verificationBackend, 'managed-readonly-rcon')
   assert.equal(report.entitiesVerified, 1)
   assert.equal(report.containersVerified, 1)

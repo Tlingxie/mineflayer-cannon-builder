@@ -55,6 +55,15 @@ test('an enclosed source uses a neighboring source cell temporarily, with a sepa
   assert.throws(() => planConstructionSupports({ ...plan, tasks: active }, { tasks: active, derived: [] }, { startLayer: 0, materialState: 10 }), /no supported same-layer staging root/)
 })
 
+test('source-water replacements for bubble columns remain fluid references in staging plans', () => {
+  const bubble = task(1, 0, 1, 'bubble_column')
+  const sources = [task(1, 1, 1, 'water'), ...[[0, 1], [2, 1], [1, 0], [1, 2]].map(([x, z]) => task(x, 1, z, 'water'))]
+  const flowing = { ...task(0, 0, 1, 'water'), reason: 'generated-by-source-water' }
+  const physical = { ...bubble, name: 'water', generatedTarget: { name: bubble.name, state: bubble.state } }
+  const result = planConstructionSupports({ ...bounds, tasks: [bubble, ...sources, flowing] }, { tasks: [physical, ...sources], derived: [flowing] }, { startLayer: 0, materialState: 10 })
+  assert.deepEqual(result.fluidStaging.map(item => [item.targetId, item.dependentIds]), [['0,1,1', ['1,1,1']]])
+})
+
 test('adjacent tray-backed roots do not create cyclic staging dependencies', () => {
   const active = []
   const derived = []

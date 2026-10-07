@@ -1,6 +1,6 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { decodeLitematic, resolveState, matchesTarget, preparePhysicalPlan, inspectPlan } = require('../lib/strictSchematic')
+const { decodeLitematic, resolveState, matchesTarget, matchesPhysicalTarget, preparePhysicalPlan, inspectPlan, createBuildContext } = require('../lib/strictSchematic')
 const Block = require('prismarine-block')('1.21.4')
 
 test('integer state migration preserves the requested tree and distance', () => {
@@ -87,6 +87,46 @@ test('natural components become explicit verification obligations, never block p
   const result = preparePhysicalPlan(plan)
   assert.deepEqual(result.tasks.map(t => t.id), ['2', '4'])
   assert.deepEqual(result.derived.map(t => t.id), ['0', '1', '3'])
+})
+
+test('bubble columns receive source-water preparation while keeping original direction for final verification', () => {
+  const bubble = resolveState('bubble_column', { drag: false }, '1.21.11')
+  const task = { id: '0,1,0', type: 'place', name: 'bubble_column', state: bubble.stateId, pos: { x: 0, y: 1, z: 0 } }
+  const plan = { version: '1.21.11', tasks: [task], air: [], layers: [1], blockEntities: [], entities: [] }
+  const physical = preparePhysicalPlan(plan)
+  assert.equal(physical.tasks[0].name, 'water')
+  assert.equal(physical.tasks[0].state, resolveState('water', { level: 0 }, '1.21.11').stateId)
+  assert.deepEqual(physical.tasks[0].generatedTarget, { name: 'bubble_column', state: bubble.stateId })
+  assert.equal(physical.derived[0].state, bubble.stateId)
+  assert.equal(plan.tasks[0], task)
+  assert.equal(task.name, 'bubble_column')
+  assert.deepEqual(inspectPlan(plan).issues, [])
+  const context = createBuildContext(plan, {})
+  assert.equal(context.getTargetBlock(physical.tasks[0].state).name, 'water')
+  assert.equal(context.items[physical.tasks[0].state].name, 'water_bucket')
+})
+
+test('water preparation accepts only its declared bubble direction, never weakens original final matching', () => {
+  const water = resolveState('water', { level: 0 })
+  const bubble = resolveState('bubble_column', { drag: false })
+  const task = { name: 'water', generatedTarget: { name: 'bubble_column', state: bubble.stateId } }
+  assert.equal(matchesPhysicalTarget(water, water, task), true)
+  assert.equal(matchesPhysicalTarget(water, bubble, task), true)
+  assert.equal(matchesPhysicalTarget(water, resolveState('bubble_column', { drag: true }), task), false)
+  assert.equal(matchesPhysicalTarget(water, resolveState('water', { level: 1 }), task), false)
+  assert.equal(matchesPhysicalTarget(water, bubble, { name: 'water' }), false)
+  assert.equal(matchesTarget(bubble, water), false)
+})
+
+test('fire is physically ignitable and natural age changes do not hide shape or type differences', () => {
+  const fire = resolveState('fire', { age: 15 })
+  const fresh = resolveState('fire', { age: 0 })
+  assert.equal(matchesTarget(fire, fresh), true)
+  assert.equal(matchesTarget(fire, fresh, { exact: true }), false)
+  assert.equal(matchesTarget(fire, resolveState('soul_fire')), false)
+  assert.equal(matchesTarget(fire, resolveState('fire', { age: 0, north: true })), false)
+  const plan = { version: '1.21.4', tasks: [{ id: 'fire', name: 'fire', state: fire.stateId }], air: [], layers: [], blockEntities: [], entities: [] }
+  assert.deepEqual(inspectPlan(plan).issues, [])
 })
 
 test('empty container and default comparator metadata do not request inventory filling', () => {
