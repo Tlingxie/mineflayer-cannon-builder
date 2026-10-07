@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#173e33">
+    <title>方块工地 · 建造控制台</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="brand" href="/" aria-label="方块工地首页">
+          <span class="brand-icon" aria-hidden="true"><svg viewBox="0 0 28 28" fill="none"><path d="m14 3 10 5.5v11L14 25 4 19.5v-11L14 3Z" stroke="currentColor" stroke-width="1.6"/><path d="m4 8.5 10 5.6 10-5.6M14 14v11M9 5.8l10 5.5" stroke="currentColor" stroke-width="1.6"/></svg></span>
+          <span>方块工地<span class="brand-divider">/</span><span class="brand-subtitle">建造控制台</span></span>
+        </a>
+        <div class="server-badge" id="server-badge"><span class="status-dot"></span><span id="server-status">正在连接</span><span class="server-version">1.21.11</span></div>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <div class="page-heading">
+        <div><p class="eyebrow">BUILD WORKSPACE</p><h1>让蓝图，一层层落地。</h1><p class="page-description">选好位置，交给建造队。每一块都由 bot 飞近后放置。</p></div>
+        <div class="layer-rule"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m3 7 9-4 9 4-9 4-9-4Zm0 5 9 4 9-4M3 17l9 4 9-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><div><strong>严格逐层施工</strong><span>当前层验证通过，才进入上一层</span></div></div>
+      </div>
+
+      <div id="connection-error" class="notice notice-error" role="alert" hidden></div>
+      <div class="workspace-grid">
+        <section class="configuration card" aria-labelledby="configuration-heading">
+          <div class="card-heading"><h2 id="configuration-heading">新建施工任务</h2><span class="quiet-label">主世界</span></div>
+          <form id="build-form">
+            <fieldset id="configuration-fields">
+              <section class="form-step">
+                <div class="step-heading"><span class="step-number">01</span><h3>选定原点</h3></div>
+                <div class="coordinate-inputs">
+                  <label class="coordinate-field"><span>X</span><input id="origin-x" name="x" type="number" value="128" step="1" min="-29999984" max="29999984" required aria-label="原点 X 坐标"></label>
+                  <label class="coordinate-field"><span>Y</span><input id="origin-y" name="y" type="number" value="0" step="1" min="-319" max="319" required aria-label="原点 Y 坐标"></label>
+                  <label class="coordinate-field"><span>Z</span><input id="origin-z" name="z" type="number" value="128" step="1" min="-29999984" max="29999984" required aria-label="原点 Z 坐标"></label>
+                </div>
+                <label class="select-row" for="origin-mode"><span>坐标对应</span><select id="origin-mode"><option value="schematic">蓝图原点</option><option value="minimum">包围盒最小角</option></select></label>
+                <p class="field-help" id="origin-help">Mk6 轨道炮的蓝图原点 X、Y、Z 都需要能被 16 整除。</p>
+              </section>
+
+              <section class="form-step">
+                <div class="step-heading"><span class="step-number">02</span><h3>放入蓝图</h3><span id="upload-state" class="step-aside"></span></div>
+                <label class="drop-zone" id="drop-zone" for="blueprint-input" tabindex="0" role="button" aria-label="选择或拖入蓝图文件">
+                  <input id="blueprint-input" type="file" accept=".litematic,.schem" class="visually-hidden">
+                  <span class="upload-icon" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M19 5H8a2 2 0 0 0-2 2v18a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V12l-7-7Z" stroke="currentColor" stroke-width="1.5"/><path d="M19 5v7h7M16 22v-7m-3 3 3-3 3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+                  <strong id="upload-title">将蓝图拖到这里</strong>
+                  <span id="upload-subtitle">或点击选择文件</span>
+                  <span class="file-types">.litematic<span>·</span>.schem<span>·</span><span id="upload-size-limit">最大 32 MB</span></span>
+                </label>
+                <p class="field-help file-summary" id="file-summary" hidden></p>
+              </section>
+
+              <section class="form-step bot-step">
+                <div class="step-heading"><span class="step-number">03</span><h3>安排建造队</h3><label class="bot-number-label"><input id="bot-count" type="number" min="1" max="30" step="1" value="30" aria-label="Bot 人数"><span>个 bot</span></label></div>
+                <label class="visually-hidden" for="bot-slider">选择 Bot 人数</label><input id="bot-slider" class="bot-slider" type="range" min="1" max="30" value="30">
+                <div class="range-labels"><span>1 个</span><span>30 个 · 最大并行</span></div>
+                <p class="field-help">建造队共享同一层任务，完成后一起向上。</p>
+              </section>
+            </fieldset>
+            <div class="build-actions">
+              <div id="form-error" class="notice notice-error" role="alert" hidden></div>
+              <button class="button button-primary" id="start-build" type="submit" disabled><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="m7 4 9 6-9 6V4Z" fill="currentColor"/></svg><span id="start-label">选择蓝图后开始施工</span></button>
+              <p class="action-footnote"><span class="tiny-dot"></span><span id="server-address">127.0.0.1:25566</span><span>·</span><span>实体放置</span></p>
+            </div>
+          </form>
+        </section>
+
+        <div class="monitor-column">
+          <section class="blueprint-card card" aria-labelledby="blueprint-heading">
+            <div class="card-heading"><h2 id="blueprint-heading">蓝图预览</h2><span class="quiet-label" id="preview-label">俯视图</span></div>
+            <div class="blueprint-stage" id="blueprint-stage">
+              <canvas id="blueprint-preview" aria-label="蓝图俯视点阵预览" hidden></canvas>
+              <div class="preview-empty" id="preview-empty"><svg viewBox="0 0 84 80" fill="none" aria-hidden="true"><path d="m42 13 27 15v30L42 73 15 58V28l27-15Z" stroke="currentColor" stroke-width="1.2"/><path d="m15 28 27 15 27-15M42 43v30M28.5 20.5l27 15M28.5 35.5l27-15M28.5 35.5v30M55.5 35.5v30M15 43l27 15 27-15" stroke="currentColor" stroke-opacity=".45" stroke-width="1.2"/></svg><strong>工地等待第一张蓝图</strong><span>上传后查看规模与施工范围</span></div>
+              <span class="preview-axis axis-north">−Z</span><span class="preview-axis axis-east">+X</span><span class="preview-caption" id="preview-caption" hidden>方块俯视投影</span>
+            </div>
+            <div class="blueprint-information">
+              <div class="blueprint-title-row"><div><h3 id="blueprint-name">尚未选择蓝图</h3><p id="blueprint-dimensions">支持 Litematica 与 Sponge 蓝图</p></div><span class="blueprint-file-badge" id="blueprint-file-badge" hidden></span></div>
+              <div class="blueprint-stats"><div><span>主动放置</span><strong id="blueprint-blocks">—</strong></div><div><span>施工层数</span><strong id="blueprint-layers">—</strong></div><div><span>施工高度 Y</span><strong id="blueprint-height">—</strong></div></div>
+              <div id="blueprint-warnings" class="notice notice-warning" hidden></div>
+            </div>
+          </section>
+
+          <section class="progress-card card" aria-labelledby="progress-heading">
+            <div class="card-heading"><div class="heading-with-status"><h2 id="progress-heading">施工现场</h2><span id="job-status" class="job-status">待命</span></div><button id="stop-build" class="button button-stop" type="button" hidden><span class="stop-icon"></span><span id="stop-label">停止施工</span></button></div>
+            <div class="progress-content">
+              <p class="job-context" id="job-context" hidden><span id="job-name"></span><span id="job-origin"></span></p>
+              <div class="progress-headline"><div><strong id="progress-count">0</strong><span id="progress-total"> / — 块已验证</span></div><span id="progress-percent">0%</span></div>
+              <div class="progress-track" role="progressbar" aria-label="已验证方块比例" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="progress-bar"><div id="progress-fill"></div></div>
+              <div class="live-stats"><div><span>当前层 Y</span><strong id="current-layer">—</strong></div><div><span>完成层数</span><strong id="completed-layers">—</strong></div><div><span id="connected-bots-label">已连接 bot</span><strong id="connected-bots">—</strong></div><div><span>施工用时</span><strong id="elapsed-time">—</strong></div></div>
+              <p class="job-description" id="job-description">准备好蓝图后，即可开始第一层。</p>
+              <div id="job-error" class="notice notice-error" role="alert" hidden></div>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <section class="logs-card card" aria-labelledby="logs-heading"><div class="card-heading"><div class="heading-with-status"><h2 id="logs-heading">施工日志</h2><span class="quiet-label" id="log-count">0 条</span></div><button class="text-button" type="button" id="toggle-logs" aria-expanded="true" aria-controls="log-output">收起日志</button></div><div class="log-output" id="log-output" role="log" aria-label="实时施工日志" aria-live="off"><p class="log-empty">任务启动后，连接、放置与验证记录会显示在这里。</p></div></section>
+      <footer class="workspace-footer"><span>自下而上 · 逐块放置 · 整层验证</span><span>铁门、活塞头等允许自然生成。需要冻结的蓝图会提示处理，不会自动冻结服务器。</span></footer>
+    </main>
+  </body>
+</html>
