@@ -20,6 +20,7 @@
     "multi-build:dev": "node examples/strictBuilder.js --fixture",
     "server:start": "node scripts/server-local.js start",
     "server:status": "node scripts/server-local.js status",
+    "server:attach": "node scripts/server-attach.js",
     "server:stop": "node scripts/server-local.js stop"
   },
   "author": "Karang",

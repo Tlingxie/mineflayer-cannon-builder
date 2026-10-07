@@ -1,6 +1,6 @@
 # Mineflayer Cannon Builder
 
-基于 Mineflayer 的 Minecraft Java 版建造工具，支持最多 30 个 bot 在同一进程中协作，按全局 Y 层从下向上施工。bot 实际飞到目标附近，通过玩家放置、挖掘和容器交互完成任务。
+基于 Mineflayer 的 Minecraft Java 版建造工具，支持最多 30 个 bot 在同一进程中协作，按全局 Y 层从下向上施工。bot 实际飞到目标附近，通过玩家放置、挖掘和容器交互完成任务。默认端点为 **Minecraft 1.21.11，127.0.0.1:25566**。
 
 本仓库导出建造、恢复、审计工具和测试，**不包含主炮、下界加载器或控制面板蓝图**。`schematics/` 中保留的是原项目示例，不能替代这些蓝图。当前传送门物品循环装置的故障尚未解决；结构、容器和实体装配验收通过，不等于已经通过发射或整机运行验收。
 
@@ -8,7 +8,7 @@
 
 - Node.js **22 或更高版本**；CI 覆盖 Node.js 22、24。
 - Java **21**：本地 Minecraft 服务器与可选的 Java agent 使用。
-- 已验证的施工版本为 Minecraft Java **1.21.4**。其他版本需要自行验证方块状态、协议与放置规则。
+- Minecraft Java **1.21.11** 已通过 30 bot、三层 180 方块实测，容器组件另经 GUI 与服务器回读验证。旧 **1.21.4** 施工路径保留；完整主炮的发射功能未验证。
 - bot 使用离线账号和创造模式材料；需要飞行权限。调试棒校准还需要 OP 权限。
 
 ```bash
@@ -20,7 +20,18 @@ npm test
 
 `package.json` 保留 `mineflayer-builder` 名称及 `file:.` 自依赖，使原示例的导入方式继续工作；`private: true` 防止误发布到同名 npm 包。此仓库没有自动 npm 发布工作流。
 
-## 启动本机施工服
+## 接入已有 1.21.11 服务器
+
+对于使用本机 FIFO 控制台和日志的服务，可以核对进程身份并生成独立配置，不重启或冻结服务器：
+
+```bash
+npm run server:attach
+npm run multi-build:dev -- --server-profile .runtime/servers/1.21.11-25566.json --prepare-workers --prefix cannon --origin 256,64,256
+```
+
+请先选有地面的空地。`--prepare-workers` 仅为本次在线施工账号设置创造模式和 OP；主炮封闭矿车等装配仍需要事先安排冻结施工。服务器重启后重新运行 `server:attach`。完整说明及实测记录见 [1.21.11 使用说明](docs/minecraft-1.21.11.md)。
+
+## 可选：启动旧版 1.21.4 受管施工服
 
 首次启动会下载官方 Minecraft 1.21.4 服务端。先阅读 [Minecraft EULA](https://aka.ms/MinecraftEULA)，接受后显式传入参数：
 
@@ -40,7 +51,7 @@ npm run server:status
 先运行内置的三层、180 个目标测试；请选空地，并使用上一步查到的端口：
 
 ```bash
-npm run multi-build:dev -- --port 25565 --origin 0,-60,90
+npm run multi-build:dev -- --version 1.21.4 --port 25565 --origin 0,-60,90
 ```
 
 自己的蓝图先做只读检查，再开始施工：
@@ -50,10 +61,10 @@ npm run multi-build:dev -- --port 25565 --origin 0,-60,90
 npm run multi-build -- --schematic "/path/to/build.litematic" --inspect
 
 # 最多 30 个 bot；此例指定蓝图包围盒最小角
-npm run multi-build -- --schematic "/path/to/build.litematic" --port 25565 --bots 30 --origin 0,-60,0
+npm run multi-build -- --version 1.21.4 --schematic "/path/to/build.litematic" --port 25565 --bots 30 --origin 0,-60,0
 
 # 对有源原点信息的 Litematic，也可以指定真正的蓝图原点
-npm run multi-build -- --schematic "/path/to/build.litematic" --port 25565 --bots 30 --schematic-origin 128,0,128
+npm run multi-build -- --version 1.21.4 --schematic "/path/to/build.litematic" --port 25565 --bots 30 --schematic-origin 128,0,128
 ```
 
 两种原点不能同时传入：
@@ -70,7 +81,9 @@ npm run multi-build -- --schematic "/path/to/build.litematic" --port 25565 --bot
 | 参数 | 默认值或作用 |
 | --- | --- |
 | `--host` / `--port` | `127.0.0.1` / `25566`；必须与实际服务器一致 |
-| `--version` | `1.21.4` |
+| `--version` | `1.21.11`；旧受管服显式指定 `1.21.4` |
+| `--server-profile` | 已核验的外部本机 FIFO 控制台配置 |
+| `--prepare-workers` | 配合 profile，仅准备本次在线施工 bot 的创造模式与 OP |
 | `--bots` | `30`，范围 1–30 |
 | `--prefix` | `builder`；更换后应确保对应账号的权限 |
 | `--bottom-layers N` | 只建最低 N 个蓝图层，报告明确为部分施工 |
@@ -92,7 +105,7 @@ npm run multi-build -- --schematic "/path/to/build.litematic" --port 25565 --bot
 当前世界未回滚时，可以继续原记录：
 
 ```bash
-npm run multi-build -- --schematic "/path/to/build.litematic" --port 25565 --origin 0,-60,0 --resume ".runtime/builds/<运行时间>"
+npm run multi-build -- --version 1.21.4 --schematic "/path/to/build.litematic" --port 25565 --origin 0,-60,0 --resume ".runtime/builds/<运行时间>"
 ```
 
 已完成低层只读复核，不重新放置；若这些层被破坏，续建会停止。恢复记录同时保存本次拥有的临时支撑，避免任意清理世界中的其他方块。`freshVerifiedBlocks` 表示本次新验收目标，仍可能包含已正确的方块；`placementAttempts` 包含失败尝试及支架，两者都不等于新放置成功数。

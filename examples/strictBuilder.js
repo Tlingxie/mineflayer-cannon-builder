@@ -23,7 +23,9 @@ function parseOptions (args = process.argv.slice(2)) {
       host: { type: 'string', default: '127.0.0.1' },
       port: { type: 'string', default: '25566' },
       bots: { type: 'string', default: '30' },
-      version: { type: 'string', default: '1.21.4' },
+      version: { type: 'string', default: '1.21.11' },
+      'server-profile': { type: 'string' },
+      'prepare-workers': { type: 'boolean', default: false },
       origin: { type: 'string' },
       'schematic-origin': { type: 'string' },
       prefix: { type: 'string', default: 'builder' },
@@ -45,6 +47,8 @@ function parseOptions (args = process.argv.slice(2)) {
   if (!values.fixture && !values.schematic) throw new Error('Provide --schematic <path> or --fixture')
   if (values.fixture && values.schematic) throw new Error('Choose --fixture or --schematic')
   if (!/^[A-Za-z0-9_]{1,14}$/.test(values.prefix)) throw new Error('Invalid --prefix')
+  if (values['prepare-workers'] && !values['server-profile']) throw new Error('--prepare-workers requires --server-profile')
+  if (values['server-profile'] !== undefined && (!values['server-profile'].trim() || values.host !== '127.0.0.1')) throw new Error('--server-profile requires a local profile and host 127.0.0.1')
   if (values.origin !== undefined && values['schematic-origin'] !== undefined) throw new Error('--origin and --schematic-origin are mutually exclusive')
   if (values.fixture && values['schematic-origin'] !== undefined) throw new Error('--schematic-origin is unavailable for a fixture')
   const parseOrigin = (value, flag) => {
@@ -55,7 +59,7 @@ function parseOptions (args = process.argv.slice(2)) {
   }
   const origin = parseOrigin(values.origin ?? '0,-60,0', '--origin')
   const schematicOrigin = values['schematic-origin'] === undefined ? undefined : parseOrigin(values['schematic-origin'], '--schematic-origin')
-  return { ...values, bots, port, maxAttempts, spawnDelay, bottomLayers, origin, schematicOrigin }
+  return { ...values, bots, port, maxAttempts, spawnDelay, bottomLayers, origin, schematicOrigin, serverProfile: values['server-profile'] === undefined ? undefined : path.resolve(values['server-profile']), prepareWorkers: values['prepare-workers'] }
 }
 
 async function loadBuildPlan (options, { reader = readPlan } = {}) {
@@ -536,8 +540,14 @@ async function verifyBuildContents ({ tasks, workers, signal, report, emit, veri
   }
 }
 
-async function selectVerificationBackend (options, { signal, snapshotFactory = require('../lib/serverSnapshot').createServerSnapshot, cloneSnapshotFactory = require('../lib/serverSnapshot').createCloneSnapshot } = {}) {
+async function selectVerificationBackend (options, { signal, snapshotFactory = require('../lib/serverSnapshot').createServerSnapshot, cloneSnapshotFactory = require('../lib/serverSnapshot').createCloneSnapshot, externalSnapshotFactory = require('../lib/serverSnapshot').createExternalSnapshot } = {}) {
   checkSignal(signal)
+  if (options.serverProfile) {
+    const endpoint = { host: options.host, port: options.port, version: options.version }
+    const snapshot = await externalSnapshotFactory(endpoint, { signal, profilePath: options.serverProfile })
+    checkSignal(signal)
+    return { backend: 'external-readonly-console', snapshot }
+  }
   if (options.host !== '127.0.0.1') return { backend: 'physical-gui' }
   const clone = options.port === 25567
   try {
@@ -559,6 +569,7 @@ async function grantManagedCloneOperators (workers, options, verification, {
     return async () => { await lock.close(); await fs.unlink(filename) }
   }
 } = {}) {
+  if (options.serverProfile) return []
   if (options.host !== '127.0.0.1' || options.port !== 25567) return []
   if (options.version !== '1.21.4' || verification.backend !== 'managed-readonly-rcon' || !verification.snapshot?.readTickState) throw new Error('Clone operator grants require an attested managed endpoint')
   checkSignal(signal)
@@ -598,7 +609,7 @@ async function grantManagedCloneOperators (workers, options, verification, {
 async function prepareMechanismStaging (plan, { selectedLayers = new Set(plan.layers), signal, mechanisms = require('../lib/physicalMechanisms'), verificationBackend = { backend: 'physical-gui' } } = {}) {
   const staged = mechanisms.normalizeMinecartEntities(plan, { frozen: true }).filter(entity => entity.stagedStrategy && selectedLayers.has(entity.layer))
   if (!staged.length) return { frozen: false, entityIds: [] }
-  if (verificationBackend.backend !== 'managed-readonly-rcon' || !verificationBackend.snapshot?.readTickState) throw new Error('Enclosed minecart staging requires managed server freeze attestation')
+  if (!['managed-readonly-rcon', 'external-readonly-console'].includes(verificationBackend.backend) || !verificationBackend.snapshot?.readTickState) throw new Error('Enclosed minecart staging requires managed or external server freeze attestation')
   checkSignal(signal)
   const attestation = await verificationBackend.snapshot.readTickState({ signal })
   checkSignal(signal)
@@ -643,7 +654,7 @@ function createMechanismHooks (plan, { selectedLayers = new Set(plan.layers), re
           const assertFrozen = entity.stagedStrategy
             ? async () => {
               checkSignal(signal)
-              if (verificationBackend.backend !== 'managed-readonly-rcon' || !verificationBackend.snapshot?.readTickState) throw new Error('Staged minecart requires managed freeze attestation')
+              if (!['managed-readonly-rcon', 'external-readonly-console'].includes(verificationBackend.backend) || !verificationBackend.snapshot?.readTickState) throw new Error('Staged minecart requires managed or external freeze attestation')
               report.freezeEvidence ||= []
               try {
                 const state = await verificationBackend.snapshot.readTickState({ signal })
@@ -803,6 +814,8 @@ async function connectWorker (index, options, signal, onBot) {
     signal.addEventListener('abort', abort, { once: true })
     if (signal.aborted) abort()
   })
+  require('../lib/protocolCompatibility').installProtocolCompatibility(bot)
+  if (options.prepareWorkers) await require('../lib/externalWorkerSetup').prepareExternalWorker(bot, options, { signal })
   if (bot.game.gameMode !== 'creative') throw new Error(`${bot.username} requires creative mode`)
   bot.creative.startFlying()
   await bot.waitForChunksToLoad()
