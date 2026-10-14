@@ -16,6 +16,7 @@
     "lint": "standard",
     "fix": "standard --fix",
     "web": "node scripts/web-server.js",
+    "music:follow": "node scripts/music-follow.js",
     "multi-build": "node examples/strictBuilder.js",
     "multi-build:legacy": "node examples/multiBuilder.js",
     "multi-build:dev": "node examples/strictBuilder.js --fixture",
