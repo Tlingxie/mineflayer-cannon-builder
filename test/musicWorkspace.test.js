@@ -67,6 +67,28 @@ test('read barrier returns every owner home and rejects real missing columns', a
   await assert.rejects(workspace.parkForRead(), /chunk.*load|区块/i)
 })
 
+test('read coverage requires blueprint columns while unloaded columns outside its bounds do not block', async () => {
+  const { plan, workers, air } = fixture(2, 130)
+  for (const worker of workers) worker.bot.world.getColumn = (x, z) => x >= 0 && x <= 8 && z >= 216 && z <= 217 ? {} : null
+  const workspace = createMusicWorkspace(plan, workers, { loadTimeoutMs: 0 })
+  await workspace.parkForRead()
+  assert.equal(workspace.readBlock(new Vec3(129, 64, 3484)), air)
+  assert.equal(workspace.readBlock(new Vec3(144, 64, 3440)), null)
+  for (const worker of workers) worker.bot.world.getColumn = (x, z) => x >= 0 && x <= 7 && z >= 216 && z <= 217 ? {} : null
+  await assert.rejects(workspace.parkForRead(), /chunk not loaded at 8,216/)
+})
+
+test('every home is a block center so arrival tolerance cannot cross a chunk boundary', () => {
+  const { plan, workers } = fixture()
+  const workspace = createMusicWorkspace(plan, workers)
+  for (const home of workspace.homes.values()) {
+    assert.equal(home.x - Math.floor(home.x), 0.5)
+    assert.equal(home.z - Math.floor(home.z), 0.5)
+    assert.equal(Math.floor((home.x - 0.15) / 16), Math.floor((home.x + 0.15) / 16))
+    assert.equal(Math.floor((home.z - 0.15) / 16), Math.floor((home.z + 0.15) / 16))
+  }
+})
+
 test('task approach stays within its fixed section and completes flight before placement deadline begins', async () => {
   const { plan, workers, moves } = fixture(2, 130)
   const workspace = createMusicWorkspace(plan, workers)
