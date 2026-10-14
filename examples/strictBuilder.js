@@ -8,6 +8,7 @@ const { planLayerSupports, createSupportCleanupTasks } = require('../lib/layerSu
 const { buildIdentity, loadRecovery } = require('../lib/buildRecovery')
 const { approachGoal } = require('../lib/physicalApproach')
 const { verifyNoteBlockMusic } = require('../lib/noteBlockMusic')
+const { createMusicWorkspace } = require('../lib/musicWorkspace')
 const { readPlan, resolveState, matchesTarget, matchesPhysicalTarget, dynamicProperties, createBuildContext, inspectPlan, preparePhysicalPlan } = require('../lib/strictSchematic')
 const AIR = new Set(['air', 'cave_air', 'void_air'])
 const RAILS = new Set(['rail', 'powered_rail', 'activator_rail', 'detector_rail'])
@@ -119,7 +120,8 @@ function selectedPhysicalTasks (plan, physicalPlan, bottomLayers = Infinity, iss
   return { tasks, layers, selected, derived: physicalPlan.derived.filter(task => selected.has(task.pos.y)), completeBlueprint: layers.length === plan.layers.length }
 }
 
-async function stageWorkers (workers, plan, { signal, onEvent = () => {}, minimumLayer = plan.min.y } = {}) {
+async function stageWorkers (workers, plan, { signal, onEvent = () => {}, minimumLayer = plan.min.y, workspace } = {}) {
+  if (workspace) return workspace.parkForRead({ signal, reason: 'staging' })
   const controller = new AbortController()
   const abort = () => controller.abort(signal.reason)
   signal?.addEventListener('abort', abort, { once: true })
@@ -180,7 +182,7 @@ function updateVerificationMetrics (report, elapsedSeconds) {
   if (Number.isFinite(report.placementAttempts)) report.placementAttemptsPerSecond = report.placementAttempts / seconds
 }
 
-async function runLayeredBuild ({ plan, physicalPlan = preparePhysicalPlan(plan), workers, readBlock, options = {}, signal, report = {}, onEvent = () => {}, settleMs = 150, naturalTimeoutMs = 120000, fillContainer = (...args) => require('../lib/physicalInventory').fillContainer(...args), afterLayer, afterLayerVerified, afterBuild, afterNaturalGeneration, recovery, constructionPlan = recovery?.constructionPlan }) {
+async function runLayeredBuild ({ plan, physicalPlan = preparePhysicalPlan(plan), workers, readBlock, workspace, options = {}, signal, report = {}, onEvent = () => {}, settleMs = 150, naturalTimeoutMs = 120000, fillContainer = (...args) => require('../lib/physicalInventory').fillContainer(...args), afterLayer, afterLayerVerified, afterBuild, afterNaturalGeneration, recovery, constructionPlan = recovery?.constructionPlan }) {
   if (!Number.isFinite(naturalTimeoutMs) || naturalTimeoutMs < 0) throw new Error('Invalid natural generation timeout')
   const selection = selectedPhysicalTasks(plan, physicalPlan, options.bottomLayers)
   const Block = require('prismarine-block')(plan.version)
@@ -204,6 +206,12 @@ async function runLayeredBuild ({ plan, physicalPlan = preparePhysicalPlan(plan)
   delete report.blocksPerSecond
   for (const worker of workers) report.workers[worker.id] = { completed: 0, attempts: 0, errors: 0, state: 'ready', ...(report.workers[worker.id] || {}), position: worker.position }
   const emit = event => onEvent({ time: Date.now(), activeLayer: report.currentLayer, activeWorkers: active.size, ...event })
+  const parkForRead = async reason => workspace?.parkForRead({ signal, reason })
+  const calibrateRails = async tasks => {
+    await parkForRead('rail-verification')
+    await calibrateExistingRails({ tasks, version: plan.version, workers, readBlock, signal, report, emit })
+    await parkForRead('rail-verification-complete')
+  }
   const confirmedAir = pos => AIR.has(readBlock(pos)?.name) && workers.every(worker => !worker.executor.unconfirmedDigs?.has(key(pos)))
   const isSatisfied = task => task.type === 'dig' ? confirmedAir(task.pos) : workers.every(worker => !worker.executor.unconfirmedWaterlogs?.has(key(task.pos))) && matchesPhysicalTarget(wanted.get(task.state), readBlock(task.pos), task)
   const checkAir = (layer, temporary = new Set()) => {
@@ -221,6 +229,7 @@ async function runLayeredBuild ({ plan, physicalPlan = preparePhysicalPlan(plan)
       tasks,
       workers,
       signal,
+      taskOwner: workspace?.ownerForTask,
       maxAttempts: phase === 'targets' && temporary.size ? Math.max(options.maxAttempts || 12, 40) : (options.maxAttempts || 12),
       execute: async (worker, task, context) => {
         if (context.layer !== report.currentLayer || task.pos.y !== report.currentLayer) throw new Error('Layer audit rejected an out-of-layer operation')
@@ -231,6 +240,7 @@ async function runLayeredBuild ({ plan, physicalPlan = preparePhysicalPlan(plan)
         report.activeWorkers = active.size
         report.peakActiveWorkers = Math.max(report.peakActiveWorkers, active.size)
         try {
+          if (workspace) await workspace.approachTask(worker, task, { signal: context.signal })
           if (task.persistent && task.type === 'place' && !owned.has(key(task.pos))) {
             const actual = readBlock(task.pos)
             if (!actual || (!AIR.has(actual.name) && !((task.replacesDerived || task.purpose === 'fluid-staging') && actual.name === 'water'))) throw new Error(`Unowned occupied persistent support at ${task.id}`)
@@ -269,6 +279,7 @@ async function runLayeredBuild ({ plan, physicalPlan = preparePhysicalPlan(plan)
         }
       },
       verifyLayer: async () => {
+        await parkForRead('phase-verification')
         if (settleMs) await sleep(settleMs)
         checkSignal(signal)
         const missing = tasks.filter(task => !isSatisfied(task))
@@ -297,6 +308,7 @@ async function runLayeredBuild ({ plan, physicalPlan = preparePhysicalPlan(plan)
     return scheduler.run()
   }
   const cleanPersistent = async (supports, targets) => {
+    if (supports.length) await parkForRead('persistent-cleanup-planning')
     const activeLayer = report.currentLayer
     const layers = [...new Set(supports.map(task => task.pos.y))].sort((a, b) => b - a)
     for (const layer of layers) {
@@ -319,12 +331,13 @@ async function runLayeredBuild ({ plan, physicalPlan = preparePhysicalPlan(plan)
     report.currentLayer = activeLayer
   }
   try {
+    await parkForRead('initial-verification')
     const verifiedLayers = new Set(recovery?.completedLayers || [])
     const recoveredSupports = recovery?.supports || []
     if (recovery) {
       if (!constructionLayers.includes(recovery.highestLayer)) throw new Error('Recovery selection must include the historical highest layer')
       report.currentLayer = recovery.highestLayer
-      await calibrateExistingRails({ tasks: selection.tasks.filter(task => task.pos.y < recovery.highestLayer || verifiedLayers.has(task.pos.y)), version: plan.version, workers, readBlock, signal, report, emit })
+      await calibrateRails(selection.tasks.filter(task => task.pos.y < recovery.highestLayer || verifiedLayers.has(task.pos.y)))
       for (const layer of constructionLayers.filter(layer => layer < recovery.highestLayer || verifiedLayers.has(layer))) {
         const missing = selection.tasks.filter(task => task.pos.y === layer && !isSatisfied(task))
         if (missing.length) throw new Error(`Recovery found a damaged completed lower layer at ${missing[0].id}; lower-layer replacement is forbidden`)
@@ -353,6 +366,7 @@ async function runLayeredBuild ({ plan, physicalPlan = preparePhysicalPlan(plan)
         continue
       }
       emit({ type: 'layer-start', phase: 'layer', layer, layerTotal: targets.length })
+      await parkForRead('layer-planning')
       const persistent = persistentTasks.filter(task => task.pos.y === layer)
       const stages = fluidStaging.filter(task => task.pos.y === layer && (owned.has(key(task.pos)) || task.dependentIds.some(id => !isSatisfied(targets.find(target => target.id === id)))))
       const stagedIds = new Set(stages.map(task => task.targetId))
@@ -385,10 +399,11 @@ async function runLayeredBuild ({ plan, physicalPlan = preparePhysicalPlan(plan)
       }
       verifyTargets(targets)
       if (afterLayer) await afterLayer({ layer, plan, workers, signal, report, readBlock, emit })
-      await calibrateExistingRails({ tasks: selection.tasks.filter(task => task.pos.y <= layer), version: plan.version, workers, readBlock, signal, report, emit })
+      await calibrateRails(selection.tasks.filter(task => task.pos.y <= layer))
       await cleanPersistent([...owned.values()].filter(task => Number.isSafeInteger(task.releaseLayer) && task.releaseLayer <= layer), targets)
       checkSignal(signal)
-      await calibrateExistingRails({ tasks: selection.tasks.filter(task => task.pos.y <= layer), version: plan.version, workers, readBlock, signal, report, emit })
+      await calibrateRails(selection.tasks.filter(task => task.pos.y <= layer))
+      await parkForRead('layer-complete')
       verifyTargets(targets)
       checkAir(layer)
       report.completed += targets.length
@@ -399,7 +414,7 @@ async function runLayeredBuild ({ plan, physicalPlan = preparePhysicalPlan(plan)
     }
     if (selection.completeBlueprint && owned.size) await cleanPersistent([...owned.values()], selection.tasks)
     if (afterBuild) await afterBuild({ plan, workers, signal, report, readBlock, emit })
-    await calibrateExistingRails({ tasks: selection.tasks, version: plan.version, workers, readBlock, signal, report, emit })
+    await calibrateRails(selection.tasks)
     if (plan.entities?.length && !afterLayer && !afterBuild) throw new Error('Final verification cannot complete: blueprint entities have not been handled')
     report.status = 'verifying'
     const bubbleTargets = selection.derived.filter(task => task.name === 'bubble_column')
@@ -428,6 +443,7 @@ async function runLayeredBuild ({ plan, physicalPlan = preparePhysicalPlan(plan)
     }
     if (settleMs) await sleep(Math.max(300, settleMs))
     checkSignal(signal)
+    await parkForRead('final-verification')
     if (plan.music) {
       report.musicVerification = verifyNoteBlockMusic(allSelected, readBlock, plan.version)
       emit({ type: 'music-verified', phase: 'verification', ...report.musicVerification })
@@ -970,14 +986,15 @@ async function main (options = parseOptions()) {
       context.items[dirt.stateId] = data.itemsByName.dirt
       worker.executor = new PhysicalBuilder(worker.bot, context, createWorkerReporter(worker, report, recordEvent, controller))
     }
-    const readBlock = pos => {
+    const workspace = createMusicWorkspace(plan, workers, { onEvent: recordEvent })
+    const readBlock = workspace?.readBlock || (pos => {
       const sorted = workers.slice().sort((a, b) => a.position.distanceSquared(pos) - b.position.distanceSquared(pos))
       for (const worker of sorted) {
         const block = worker.bot.blockAt(pos)
         if (block) return block
       }
       return null
-    }
+    })
     progressTimer = setInterval(() => {
       for (const worker of workers) report.workers[worker.id].position = worker.position
       updateVerificationMetrics(report, (Date.now() - started) / 1000)
@@ -986,8 +1003,8 @@ async function main (options = parseOptions()) {
       statusWrite = statusWrite.then(() => fs.writeFile(path.join(runDir, 'status.json'), snapshot)).catch(error => controller.abort(error))
     }, 5000)
     report.status = 'staging'
-    await stageWorkers(workers, plan, { signal: controller.signal, onEvent: recordEvent, minimumLayer: recovery?.highestLayer })
-    await runLayeredBuild({ plan, physicalPlan, workers, readBlock, options, signal: controller.signal, report, onEvent: recordEvent, recovery, constructionPlan, afterLayerVerified, ...mechanismHooks, afterNaturalGeneration: args => mechanismHooks.afterBuild({ ...args, readOnly: true }) })
+    await stageWorkers(workers, plan, { signal: controller.signal, onEvent: recordEvent, minimumLayer: recovery?.highestLayer, workspace })
+    await runLayeredBuild({ plan, physicalPlan, workers, readBlock, workspace, options, signal: controller.signal, report, onEvent: recordEvent, recovery, constructionPlan, afterLayerVerified, ...mechanismHooks, afterNaturalGeneration: args => mechanismHooks.afterBuild({ ...args, readOnly: true }) })
     console.log(JSON.stringify({ status: report.status, bots: workers.length, peakActiveWorkers: report.peakActiveWorkers, blocks: report.blueprintBlocksVerified, resumedReadOnlyBlocks: report.resumedReadOnlyBlocks, freshVerifiedBlocks: report.freshVerifiedBlocks, freshVerifiedBlocksPerSecond: report.freshVerifiedBlocksPerSecond, placementAttempts: report.placementAttempts, layers: report.layers.length, seconds: report.buildSeconds, verifiedBlocksPerSecond: report.verifiedBlocksPerSecond, placementAttemptsPerSecond: report.placementAttemptsPerSecond, runDir }))
     return report
   } catch (error) {

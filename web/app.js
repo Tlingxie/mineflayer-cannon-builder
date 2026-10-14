@@ -278,7 +278,8 @@ function renderJob (job) {
   const percentage = total > 0 ? Math.min(100, Math.max(0, completed / total * 100)) : 0
   const displayedPercentage = percentage > 0 && percentage < 1 ? '<1%' : `${Math.floor(percentage)}%`
   const waitingNatural = job?.status === 'running' && progress.phase === 'waiting-natural-generation'
-  setText('job-status', waitingNatural ? '等待自然生成' : job ? statusLabels[job.status] || job.status : '待命')
+  const staging = job?.status === 'running' && progress.phase === 'staging'
+  setText('job-status', staging ? '飞往工地' : waitingNatural ? '等待自然生成' : job ? statusLabels[job.status] || job.status : '待命')
   element('job-status').className = 'job-status'
   if (job && Object.hasOwn(statusLabels, job.status)) element('job-status').classList.add(`is-${job.status}`)
   setText('progress-count', formatNumber(completed))
@@ -308,7 +309,7 @@ function renderJob (job) {
     completed: '本次施工已完成并通过最终验证。',
     failed: '本次施工未完成，请查看下方原因与施工日志。'
   }
-  setText('job-description', waitingNatural ? '水源已放好，等待气泡柱自然生成。若服务器冻结，请恢复游戏刻；当前只等待验收，不再放置。' : job ? descriptions[job.status] || '正在获取任务状态。' : '准备好蓝图后，即可开始第一层。')
+  setText('job-description', staging ? '建造队正在飞往各自负责的区域并加载区块，到齐后开始第一层。距离较远时需要一些时间。' : waitingNatural ? '水源已放好，等待气泡柱自然生成。若服务器冻结，请恢复游戏刻；当前只等待验收，不再放置。' : job ? descriptions[job.status] || '正在获取任务状态。' : '准备好蓝图后，即可开始第一层。')
   notice('job-error', (job && job.error) || state.stopError)
   if (job && job.id !== previousId) {
     if (job.origin && isActive()) {

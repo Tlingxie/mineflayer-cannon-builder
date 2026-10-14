@@ -277,6 +277,46 @@ function persistentSupport (x, y, z, extra = {}) {
   return { id: `persistent:${x},${y},${z}`, type: 'place', pos: new Vec3(x, y, z), state: block('dirt').stateId, name: 'dirt', scaffold: true, persistent: true, purpose: 'tower', ...extra }
 }
 
+test('workspace approaches tasks before execution and parks again before each read barrier', async () => {
+  const plan = blueprint([[0, 64, 0, 'stone'], [0, 65, 0, 'glass']])
+  const env = environment(plan)
+  const events = []
+  let approached
+  let writes = 0
+  const workspace = {
+    ownerForTask: () => 'bot1',
+    approachTask: async (worker, task) => { assert.equal(worker.id, 'bot1'); approached = task.id; events.push('approach:' + task.pos.y) },
+    parkForRead: async ({ reason }) => { events.push('park:' + reason); approached = undefined }
+  }
+  for (const worker of env.workers) {
+    const perform = worker.executor.perform
+    worker.executor.perform = async (task, context) => {
+      assert.equal(approached, task.id)
+      assert.equal(worker.id, 'bot1')
+      if (task.pos.y === 65) assert.ok(events.includes('park:layer-complete'))
+      events.push('write:' + task.pos.y)
+      writes++
+      return perform(task, context)
+    }
+  }
+  await runLayeredBuild({ ...env, workspace, settleMs: 0 })
+  assert.equal(writes, 2)
+  assert.ok(events.includes('park:layer-planning'))
+  assert.ok(events.includes('park:phase-verification'))
+  assert.equal(events.at(-1), 'park:final-verification')
+})
+
+test('missing workspace coverage at the layer barrier prevents any higher layer dispatch', async () => {
+  const env = environment(blueprint([[0, 64, 0, 'stone'], [0, 65, 0, 'glass']]))
+  const workspace = {
+    ownerForTask: () => 'bot0',
+    approachTask: async () => {},
+    parkForRead: async ({ reason }) => { if (reason === 'phase-verification') throw new Error('Music workspace chunk not loaded') }
+  }
+  await assert.rejects(runLayeredBuild({ ...env, workspace, settleMs: 0 }), /chunk not loaded/)
+  assert.deepEqual(env.history.map(row => row.layer), [64])
+})
+
 test('persistent tower fills empty construction layers then is removed top down after all placements', async () => {
   const plan = blueprint([[0, 64, 0, 'stone'], [3, 67, 0, 'glass']])
   const supports = [64, 65, 66, 67].map(y => persistentSupport(2, y, 0))

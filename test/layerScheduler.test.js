@@ -329,6 +329,100 @@ test('selects nearby tasks using the current worker position', async () => {
   assert.deepEqual(order, [1, 0])
 })
 
+test('fixed task owners prevent idle and nearby workers from taking another workers tasks', async () => {
+  const dispatches = []
+  const job = scheduler({
+    tasks: [task(0), task(1), task(2)],
+    workers: [worker(0), worker(1), worker(2)],
+    taskOwner: () => 2,
+    execute: async (bot, action) => { dispatches.push([action.id, bot.id]); return true }
+  })
+  const result = await job.run()
+  assert.equal(result.completed, 3)
+  assert.deepEqual(dispatches.map(([id, owner]) => owner), [2, 2, 2])
+})
+
+test('fixed ownership is resolved once and survives execution, dependency and verification retries', async () => {
+  const tasks = [task(0), task(1), task(2, 1)]
+  const dispatches = []
+  const attempts = new Map()
+  let ownerCalls = 0
+  let ownersAvailable = true
+  let checks = 0
+  const job = scheduler({
+    tasks,
+    workers: [worker(0), worker(1)],
+    taskOwner: action => {
+      ownerCalls++
+      assert.equal(ownersAvailable, true)
+      return action.id % 2
+    },
+    execute: async (bot, action) => {
+      dispatches.push([action.id, bot.id])
+      const attempt = (attempts.get(action.id) || 0) + 1
+      attempts.set(action.id, attempt)
+      if (action.id === 0 && attempt === 1) return false
+      if (action.id === 1 && attempt === 1) throw dependencyError()
+      return true
+    },
+    verifyLayer: async (y, layerTasks) => y === 0 && checks++ === 0 ? layerTasks : []
+  })
+  assert.equal(ownerCalls, tasks.length)
+  ownersAvailable = false
+  const result = await job.run()
+  assert.equal(result.completed, 3)
+  assert.equal(ownerCalls, tasks.length)
+  assert.deepEqual([...attempts], [[0, 3], [1, 3], [2, 1]])
+  assert.ok(dispatches.every(([id, owner]) => owner === id % 2))
+  assert.equal(dispatches.at(-1)[0], 2)
+})
+
+test('fixed owner queues still drain every worker and wait for asynchronous verification before advancing', async () => {
+  const slow = deferred()
+  const verifying = deferred()
+  const verified = deferred()
+  const starts = []
+  let active = 0
+  const job = scheduler({
+    tasks: [task(0), task(1), task(2, 1)],
+    workers: [worker(0), worker(1)],
+    taskOwner: action => action.id % 2,
+    execute: async (bot, action) => {
+      starts.push([action.id, bot.id])
+      active++
+      if (action.id === 1) await slow.promise
+      active--
+      return true
+    },
+    verifyLayer: async y => {
+      assert.equal(active, 0)
+      if (y === 0) {
+        verifying.resolve()
+        await verified.promise
+      }
+      return []
+    }
+  })
+  const running = job.run()
+  await nextTurn()
+  assert.deepEqual(starts, [[0, 0], [1, 1]])
+  slow.resolve()
+  await verifying.promise
+  assert.deepEqual(starts, [[0, 0], [1, 1]])
+  verified.resolve()
+  await running
+  assert.deepEqual(starts, [[0, 0], [1, 1], [2, 0]])
+})
+
+test('rejects invalid task owner callbacks and owners outside the worker pool during construction', () => {
+  for (const taskOwner of [null, true, 0, 'worker', {}]) {
+    assert.throws(() => scheduler({ taskOwner }), /taskOwner.*function/i)
+  }
+  for (const owner of [undefined, null, 1, '0', {}, Promise.resolve(0)]) {
+    assert.throws(() => scheduler({ tasks: [task(0)], taskOwner: () => owner }), /owner.*worker/i)
+  }
+})
+
 test('rejects duplicate positions and ids before any tasks can compete', () => {
   assert.throws(() => scheduler({ tasks: [task(0, 0, 1), task(1, 0, 1)] }), /duplicate.*(position|coordinate)/i)
   assert.throws(() => scheduler({ tasks: [task(0), task(0, 1)] }), /duplicate.*id/i)

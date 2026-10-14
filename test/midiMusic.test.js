@@ -279,11 +279,31 @@ test('reads long VLQs and skips bounded metadata and sysex without inventing not
 })
 
 test('enforces duration, note-count and simultaneous voice limits without silent truncation', () => {
-  assert.throws(() => compile(midi([[event(0, 144, 60, 100), end(480 * 362)]])), /180.*秒/)
+  assert.equal(compile(midi([[event(0, 144, 60, 100), end(480 * 600)]])).music.durationSeconds, 300)
+  assert.throws(() => compile(midi([[event(0, 144, 60, 100), end(480 * 602)]])), /300.*秒/)
   const tooMany = Array.from({ length: 20001 }, () => event(0, 144, 60, 100))
   assert.throws(() => compile(midi([[...tooMany, end(0)]])), /20000|20,000/)
   const chord = [event(0, 192, 0), ...Array.from({ length: 25 }, (_, n) => event(0, 144, 54 + n, 100)),
     event(0, 193, 24), ...Array.from({ length: 25 }, (_, n) => event(0, 145, 42 + n, 100)),
     event(0, 194, 32), ...Array.from({ length: 3 }, (_, n) => event(0, 146, 30 + n, 100)), end(0)]
   assert.throws(() => compile(midi([chord])), /52.*和弦|和弦.*52/)
+})
+
+test('ignores only legacy CC7 volume 255 sentinels, reports their count and preserves notes and timing', () => {
+  const sentinels = Array.from({ length: 16 }, (_, channel) => event(0, 176 | channel, 7, 255))
+  const input = midi([[...sentinels, event(144, 144, 60, 100), event(480, 144, 64, 90), end(0)]])
+  const original = Buffer.from(input)
+  const result = compile(input)
+  const reference = compile(midi([[event(144, 144, 60, 100), event(480, 144, 64, 90), end(0)]]))
+  assert.deepEqual(input, original)
+  assert.deepEqual(result.music.notes, reference.music.notes)
+  assert.deepEqual(result.music.modules, reference.music.modules)
+  assert.equal(result.music.durationSeconds, reference.music.durationSeconds)
+  assert.ok(result.music.warnings.some(warning => /16.*非法音量值.*忽略.*音符和节拍未改/.test(warning)))
+  const parsed = require('../lib/midiParser').parseMidi(input)
+  assert.equal(parsed.warnings.length, 1)
+  assert.match(parsed.warnings[0], /16.*CC7=255/)
+  for (const bytes of [[176, 7, 128], [176, 7, 254], [176, 8, 255], [176, 128, 255], [144, 60, 255]]) {
+    assert.throws(() => compile(midi([[event(0, ...bytes), event(0, 144, 60, 100), end(0)]])), /数据字节/)
+  }
 })
