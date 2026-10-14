@@ -92,6 +92,12 @@ h3 { font-size: 13px; font-weight: 600; }
 .preview-caption { position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%); color: #829374; font-size: 9px; letter-spacing: .07em; white-space: nowrap; }
 #blueprint-preview { width: 100%; height: 100%; display: block; }
 .blueprint-information { padding: 19px 24px 21px; }
+.music-summary { margin: 16px 0 12px; padding: 13px 14px; border: 1px solid #dce5d7; border-radius: 7px; background: #f5f8f1; }
+.music-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.music-heading h4 { margin: 0; font-size: 12px; font-weight: 600; color: #355444; }
+.music-download { color: #3e704b; font-size: 11px; white-space: nowrap; text-underline-offset: 3px; }
+.music-summary p { margin: 8px 0 0; color: #637360; font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
+.music-summary .music-play-help { padding-top: 8px; border-top: 1px solid #dce5d7; color: #53684f; }
 .blueprint-title-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .blueprint-title-row > div { min-width: 0; }
 #blueprint-name { font-size: 14px; color: #3a5237; overflow-wrap: anywhere; }

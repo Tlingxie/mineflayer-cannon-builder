@@ -7,6 +7,7 @@ const { LayerScheduler } = require('../lib/layerScheduler')
 const { planLayerSupports, createSupportCleanupTasks } = require('../lib/layerSupports')
 const { buildIdentity, loadRecovery } = require('../lib/buildRecovery')
 const { approachGoal } = require('../lib/physicalApproach')
+const { verifyNoteBlockMusic } = require('../lib/noteBlockMusic')
 const { readPlan, resolveState, matchesTarget, matchesPhysicalTarget, dynamicProperties, createBuildContext, inspectPlan, preparePhysicalPlan } = require('../lib/strictSchematic')
 const AIR = new Set(['air', 'cave_air', 'void_air'])
 const RAILS = new Set(['rail', 'powered_rail', 'activator_rail', 'detector_rail'])
@@ -427,6 +428,10 @@ async function runLayeredBuild ({ plan, physicalPlan = preparePhysicalPlan(plan)
     }
     if (settleMs) await sleep(Math.max(300, settleMs))
     checkSignal(signal)
+    if (plan.music) {
+      report.musicVerification = verifyNoteBlockMusic(allSelected, readBlock, plan.version)
+      emit({ type: 'music-verified', phase: 'verification', ...report.musicVerification })
+    }
     report.placementMismatches = allSelected.filter(task => !isSatisfied(task)).map(task => task.id)
     const missing = new Set(report.placementMismatches)
     report.derivedPending = selection.derived.filter(task => missing.has(task.id)).map(task => task.id)

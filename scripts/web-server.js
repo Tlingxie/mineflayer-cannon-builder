@@ -85,6 +85,14 @@ function createWebServer ({ manager, rootDir = root, maxUploadBytes = MAX_UPLOAD
       }
       if (req.method === 'GET' && url.pathname === '/api/config') return json(res, 200, { csrfToken: token, defaults, maxUploadBytes })
       if (req.method === 'GET' && url.pathname === '/api/status') return json(res, 200, await manager.snapshot())
+      const download = /^\/api\/blueprints\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\/download$/.exec(url.pathname)
+      if (req.method === 'GET' && download) {
+        const { buffer, filename } = await manager.getDownload(download[1])
+        const fallback = filename.replace(/[^a-zA-Z0-9._ -]/g, '_') || 'music.schem'
+        const encoded = encodeURIComponent(filename).replace(/['()*]/g, character => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)
+        res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': buffer.length, 'Content-Disposition': `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}` })
+        return res.end(buffer)
+      }
       if (req.method === 'POST' && url.pathname === '/api/blueprints') {
         if (req.headers['content-type'] !== 'application/octet-stream') throw fail(415, '请上传原始蓝图文件')
         const filename = url.searchParams.get('name')

@@ -76,6 +76,36 @@ test('manager errors preserve actionable messages and status codes', async t => 
   assert.deepEqual(await result.json(), { error: 'A construction job is already active' })
 })
 
+test('generated schematic downloads use registered UUIDs and safe attachment filenames', async t => {
+  const id = '30e03482-a2ed-441c-b45c-7d1f268ac381'
+  const requested = []
+  const filename = '我的歌曲 "test".schem'
+  const f = await fixture(t, {
+    getDownload: async value => {
+      requested.push(value)
+      if (value !== id) throw Object.assign(new Error('Generated blueprint not found'), { statusCode: 404 })
+      return { buffer: Buffer.from('generated schematic'), filename }
+    }
+  })
+  const result = await fetch(`${f.url}/api/blueprints/${id}/download`)
+  assert.equal(result.status, 200)
+  assert.equal(await result.text(), 'generated schematic')
+  assert.equal(result.headers.get('Content-Type'), 'application/octet-stream')
+  const disposition = result.headers.get('Content-Disposition')
+  assert.match(disposition, /^attachment; filename="[\x20-\x21\x23-\x5b\x5d-\x7e]+"; filename\*=UTF-8''/) // eslint-disable-line no-control-regex
+  assert.ok(disposition.endsWith(encodeURIComponent(filename)))
+  assert.equal((await fetch(`${f.url}/api/blueprints/00000000-0000-4000-8000-000000000000/download`)).status, 404)
+  for (const value of ['source.mid', '..%2fsource.mid', '%2e%2e%2fsource.mid']) assert.equal((await fetch(`${f.url}/api/blueprints/${value}/download`)).status, 404)
+  assert.deepEqual(requested, [id, '00000000-0000-4000-8000-000000000000'])
+})
+
+test('MIDI uploads retain the existing same-origin binary upload contract', async t => {
+  const f = await fixture(t)
+  const result = await fetch(`${f.url}/api/blueprints?name=music.mid`, { method: 'POST', headers: { ...f.headers, 'Content-Type': 'application/octet-stream' }, body: 'MIDI' })
+  assert.equal(result.status, 201)
+  assert.deepEqual(f.calls, [['upload', 'music.mid', 'MIDI']])
+})
+
 test('static routes never expose project files or uploads and carry local CSP', async t => {
   const f = await fixture(t)
   for (const filename of ['/package.json', '/.runtime/servers/1.21.11-25566.json', '/lib/webBuildManager.js']) assert.equal((await fetch(f.url + filename)).status, 404)

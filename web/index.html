@@ -43,13 +43,13 @@
               </section>
 
               <section class="form-step">
-                <div class="step-heading"><span class="step-number">02</span><h3>放入蓝图</h3><span id="upload-state" class="step-aside"></span></div>
-                <label class="drop-zone" id="drop-zone" for="blueprint-input" tabindex="0" role="button" aria-label="选择或拖入蓝图文件">
-                  <input id="blueprint-input" type="file" accept=".litematic,.schem" class="visually-hidden">
+                <div class="step-heading"><span class="step-number">02</span><h3>放入蓝图或 MIDI</h3><span id="upload-state" class="step-aside"></span></div>
+                <label class="drop-zone" id="drop-zone" for="blueprint-input" tabindex="0" role="button" aria-label="选择或拖入蓝图或 MIDI 文件">
+                  <input id="blueprint-input" type="file" accept=".litematic,.schem,.mid,.midi" class="visually-hidden">
                   <span class="upload-icon" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M19 5H8a2 2 0 0 0-2 2v18a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V12l-7-7Z" stroke="currentColor" stroke-width="1.5"/><path d="M19 5v7h7M16 22v-7m-3 3 3-3 3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
-                  <strong id="upload-title">将蓝图拖到这里</strong>
-                  <span id="upload-subtitle">或点击选择文件</span>
-                  <span class="file-types">.litematic<span>·</span>.schem<span>·</span><span id="upload-size-limit">最大 32 MB</span></span>
+                  <strong id="upload-title">将蓝图或 MIDI 拖到这里</strong>
+                  <span id="upload-subtitle">MIDI 会转换为红石音乐轨道</span>
+                  <span class="file-types">.litematic<span>·</span>.schem<span>·</span>.mid / .midi<span>·</span><span id="upload-size-limit">最大 32 MB</span></span>
                 </label>
                 <p class="field-help file-summary" id="file-summary" hidden></p>
               </section>
@@ -78,8 +78,15 @@
               <span class="preview-axis axis-north">−Z</span><span class="preview-axis axis-east">+X</span><span class="preview-caption" id="preview-caption" hidden>方块俯视投影</span>
             </div>
             <div class="blueprint-information">
-              <div class="blueprint-title-row"><div><h3 id="blueprint-name">尚未选择蓝图</h3><p id="blueprint-dimensions">支持 Litematica 与 Sponge 蓝图</p></div><span class="blueprint-file-badge" id="blueprint-file-badge" hidden></span></div>
+              <div class="blueprint-title-row"><div><h3 id="blueprint-name">尚未选择蓝图</h3><p id="blueprint-dimensions">支持 Litematica、Sponge 蓝图与 MIDI</p></div><span class="blueprint-file-badge" id="blueprint-file-badge" hidden></span></div>
               <div class="blueprint-stats"><div><span>主动放置</span><strong id="blueprint-blocks">—</strong></div><div><span>施工层数</span><strong id="blueprint-layers">—</strong></div><div><span>施工高度 Y</span><strong id="blueprint-height">—</strong></div></div>
+              <section class="music-summary" id="music-summary" aria-labelledby="music-heading" hidden>
+                <div class="music-heading"><h4 id="music-heading">红石音乐轨道</h4><a id="music-download" class="music-download" download>下载 .schem</a></div>
+                <p id="music-details"></p>
+                <p id="music-instruments"></p>
+                <p id="music-start"></p>
+                <p class="music-play-help">施工完成后按起点按钮播放。较长轨道需要沿轨道跟随，并保持经过的区块加载，才能连续播放和听到音乐。</p>
+              </section>
               <div id="blueprint-warnings" class="notice notice-warning" hidden></div>
             </div>
           </section>

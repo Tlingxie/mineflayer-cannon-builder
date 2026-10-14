@@ -426,6 +426,28 @@ test('natural derived targets remain in final verification and cannot be declare
   assert.equal(env.history.some(event => event.pos === '0,65,0'), false)
 })
 
+test('final music checks reject the wrong instrument even when placement state matching ignores it', async () => {
+  const plan = blueprint([[0, 64, 0, 'clay'], [0, 65, 0, 'note_block', { note: 12, instrument: 'flute' }]])
+  plan.music = true
+  const env = environment(plan)
+  await assert.rejects(runLayeredBuild({ ...env, settleMs: 0, afterBuild: async () => { env.world.set('0,65,0', resolveState('note_block', { note: 12, instrument: 'harp' })) } }), /Music instrument mismatch/)
+})
+
+test('music validates clear space above notes even outside selected construction layers', async () => {
+  const plan = blueprint([[0, 64, 0, 'clay'], [0, 65, 0, 'note_block', { note: 12, instrument: 'flute' }]])
+  plan.music = true
+  const env = environment(plan)
+  env.world.set('0,66,0', resolveState('glass'))
+  await assert.rejects(runLayeredBuild({ ...env, settleMs: 0 }), /clear air above note block/)
+})
+
+test('structural note blocks in ordinary schematics retain their existing covered-block behavior', async () => {
+  const plan = blueprint([[0, 64, 0, 'stone'], [0, 65, 0, 'note_block'], [0, 66, 0, 'glass']])
+  const report = await runLayeredBuild({ ...environment(plan), settleMs: 0 })
+  assert.equal(report.status, 'verified')
+  assert.equal(report.musicVerification, undefined)
+})
+
 test('bubble water is placed layer by layer then awaited as natural columns before final verification', async () => {
   const plan = blueprint([[0, 64, 0, 'soul_sand'], [1, 64, 0, 'glass'], [0, 65, 0, 'bubble_column', { drag: false }], [1, 65, 0, 'glass'], [0, 66, 0, 'bubble_column', { drag: false }], [1, 66, 0, 'glass']])
   const env = environment(plan)

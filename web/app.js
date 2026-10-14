@@ -90,24 +90,43 @@ function updateHeight () {
   const minimum = minimumOrigin()
   const height = state.blueprint.dimensions.y
   setText('blueprint-height', Number.isFinite(minimum.y) ? `${minimum.y} → ${minimum.y + height - 1}` : '—')
+  const start = state.blueprint.music?.start
+  if (start) {
+    const position = ['x', 'y', 'z'].map(axis => Number.isSafeInteger(minimum[axis]) ? minimum[axis] + start[axis] : '—')
+    setText('music-start', `起点按钮：${position.join(', ')}（相对最小角 ${start.x}, ${start.y}, ${start.z}）`)
+  }
 }
 
 function showBlueprint () {
   const blueprint = state.blueprint
   const hasDimensions = blueprint && blueprint.dimensions
   setText('blueprint-name', blueprint ? blueprint.name || blueprint.filename : '尚未选择蓝图')
-  setText('blueprint-dimensions', hasDimensions ? `${formatNumber(blueprint.dimensions.x)} × ${formatNumber(blueprint.dimensions.y)} × ${formatNumber(blueprint.dimensions.z)} 方块 · X / Y / Z` : '支持 Litematica 与 Sponge 蓝图')
+  setText('blueprint-dimensions', hasDimensions ? `${formatNumber(blueprint.dimensions.x)} × ${formatNumber(blueprint.dimensions.y)} × ${formatNumber(blueprint.dimensions.z)} 方块 · X / Y / Z` : '支持 Litematica、Sponge 蓝图与 MIDI')
   setText('blueprint-blocks', blueprint ? formatNumber(blueprint.activeBlocks ?? blueprint.blocks) : '—')
   setText('blueprint-layers', blueprint ? formatNumber(blueprint.layers) : '—')
   setText('blueprint-height', '—')
   const extension = blueprint && blueprint.filename ? blueprint.filename.split('.').pop().toUpperCase() : ''
   setText('blueprint-file-badge', extension)
   element('blueprint-file-badge').hidden = !extension
+  const music = blueprint?.music
+  element('music-summary').hidden = !music
+  if (music) {
+    setText('music-details', `${formatNumber(music.noteCount)} 个音符 · ${formatNumber(music.durationSeconds)} 秒 · ${music.quantumSeconds} 秒节拍 · 最大时间误差 ${formatNumber(music.maxTimingErrorMs)} ms`)
+    const adaptations = `八度调整 ${formatNumber(music.octaveAdjustedNotes)} 个 · 合并重复音符 ${formatNumber(music.deduplicatedNotes)} 个`
+    const instruments = music.instruments.map(instrument => `${instrument.name} ${formatNumber(instrument.notes)}`).join('、')
+    setText('music-instruments', `${adaptations}；音色：${instruments}`)
+    const download = element('music-download')
+    download.setAttribute('href', blueprint.downloadUrl)
+    download.setAttribute('download', blueprint.filename)
+    setText('music-start', '')
+  } else {
+    element('music-download').removeAttribute('href')
+  }
   notice('blueprint-warnings', blueprint && Array.isArray(blueprint.warnings) ? blueprint.warnings.join(' ') : '')
   const schematicOption = element('origin-mode').querySelector('option[value="schematic"]')
   schematicOption.disabled = Boolean(blueprint && !blueprint.sourceMin)
   if (schematicOption.disabled) element('origin-mode').value = 'minimum'
-  setText('origin-help', blueprint && !blueprint.sourceMin ? '这份蓝图不含原点偏移，以上坐标作为包围盒最小角。' : 'Mk6 轨道炮的蓝图原点 X、Y、Z 都需要能被 16 整除。')
+  setText('origin-help', music ? '音乐轨道从所选原点延伸，起点按钮的实际坐标显示在预览下方。' : blueprint && !blueprint.sourceMin ? '这份蓝图不含原点偏移，以上坐标作为包围盒最小角。' : 'Mk6 轨道炮的蓝图原点 X、Y、Z 都需要能被 16 整除。')
   updateHeight()
   drawPreview()
 }
@@ -165,7 +184,8 @@ function drawPreview () {
 async function uploadBlueprint (file) {
   if (!file || isActive() || state.starting || !state.config) return
   if (state.uploading) return notice('form-error', '正在解析当前蓝图，请等解析完成后再更换。')
-  if (!/\.(litematic|schem)$/i.test(file.name)) return notice('form-error', '请选择 .litematic 或 .schem 格式的蓝图。')
+  const isMidi = /\.(mid|midi)$/i.test(file.name)
+  if (!/\.(litematic|schem|mid|midi)$/i.test(file.name)) return notice('form-error', '请选择 .litematic、.schem、.mid 或 .midi 文件。')
   if (file.size > state.config.maxUploadBytes) return notice('form-error', `蓝图文件过大，请选择不超过 ${Math.floor(state.config.maxUploadBytes / 1024 / 1024)} MB 的文件。`)
   if (file.size === 0) return notice('form-error', '这份文件是空的，请重新选择蓝图。')
   if (state.uploadController) state.uploadController.abort()
@@ -176,8 +196,8 @@ async function uploadBlueprint (file) {
   notice('form-error', '')
   showBlueprint()
   setText('upload-title', file.name)
-  setText('upload-subtitle', '正在读取方块与施工层…')
-  setText('upload-state', '解析中')
+  setText('upload-subtitle', isMidi ? '正在转换 MIDI、排列音符与红石节拍…' : '正在读取方块与施工层…')
+  setText('upload-state', isMidi ? '转换中' : '解析中')
   element('drop-zone').classList.add('is-loading')
   element('drop-zone').classList.remove('is-selected')
   element('file-summary').hidden = true
@@ -186,8 +206,8 @@ async function uploadBlueprint (file) {
     const blueprint = await request(`/api/blueprints?name=${encodeURIComponent(file.name)}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file, signal: state.uploadController.signal })
     if (sequence !== state.uploadSequence) return
     state.blueprint = blueprint
-    setText('upload-title', blueprint.filename || file.name)
-    setText('upload-subtitle', '点击或拖入文件以更换蓝图')
+    setText('upload-title', blueprint.sourceFilename || blueprint.filename || file.name)
+    setText('upload-subtitle', blueprint.music ? '已转换为音乐轨道，可下载或开始施工' : '点击或拖入文件以更换蓝图')
     setText('upload-state', '已就绪')
     setText('file-summary', `${formatNumber(blueprint.blocks)} 个方块 · ${formatNumber(blueprint.layers)} 层${blueprint.derivedBlocks ? ` · ${formatNumber(blueprint.derivedBlocks)} 个由游戏自然生成` : ''}`)
     element('file-summary').hidden = false
