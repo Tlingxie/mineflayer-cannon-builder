@@ -39,13 +39,17 @@ test('external profile selects its own attested snapshot and cannot fall back to
   await assert.rejects(selectVerificationBackend(options, { ...settings, externalSnapshotFactory: async () => { throw new Error('External process changed') } }), /process changed/)
 })
 
-test('enclosed minecarts accept a verified external freeze but still reject a running external world', async () => {
+test('enclosed minecart staging is unsupported even with an external freeze and has no ordinary fallback', async () => {
   const plan = { layers: [64] }
-  const mechanisms = { normalizeMinecartEntities: () => [{ id: 'cart', layer: 64, stagedStrategy: { type: 'frozen-flat-rail' } }] }
-  const verificationBackend = { backend: 'external-readonly-console', snapshot: { readTickState: async () => ({ frozen: true, quiescent: true }) } }
-  const result = await prepareMechanismStaging(plan, { mechanisms, verificationBackend })
-  assert.equal(result.frozen, true)
-  assert.deepEqual(result.entityIds, ['cart'])
-  verificationBackend.snapshot.readTickState = async () => ({ frozen: false, quiescent: false })
-  await assert.rejects(prepareMechanismStaging(plan, { mechanisms, verificationBackend }), /frozen and quiescent/)
+  let normalizations = 0
+  const mechanisms = {
+    normalizeMinecartEntities: (_plan, { frozen }) => {
+      normalizations++
+      assert.equal(frozen, true, 'must not retry as ordinary minecart placement')
+      return [{ id: 'cart', layer: 64, stagedStrategy: { type: 'frozen-flat-rail' } }]
+    }
+  }
+  const verificationBackend = { backend: 'external-readonly-console', snapshot: { readTickState: async () => assert.fail('Staging must reject before querying the server') } }
+  await assert.rejects(prepareMechanismStaging(plan, { mechanisms, verificationBackend }), /Unsupported minecart staging.*rail flattening and restoration are disabled/)
+  assert.equal(normalizations, 1)
 })

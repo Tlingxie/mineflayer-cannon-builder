@@ -10,7 +10,7 @@ const { buildIdentity, loadRecovery } = require('../lib/buildRecovery')
 const { approachGoal } = require('../lib/physicalApproach')
 const { verifyNoteBlockMusic } = require('../lib/noteBlockMusic')
 const { createMusicWorkspace } = require('../lib/musicWorkspace')
-const { readPlan, resolveState, matchesTarget, matchesPhysicalTarget, dynamicProperties, createBuildContext, inspectPlan, preparePhysicalPlan } = require('../lib/strictSchematic')
+const { readPlan, resolveState, matchesTarget, matchesPhysicalTarget, createBuildContext, inspectPlan, preparePhysicalPlan } = require('../lib/strictSchematic')
 const AIR = new Set(['air', 'cave_air', 'void_air'])
 const RAILS = new Set(['rail', 'powered_rail', 'activator_rail', 'detector_rail'])
 const key = pos => `${pos.x},${pos.y},${pos.z}`
@@ -483,57 +483,26 @@ async function reachContainer (worker, task, signal) {
   await worker.executor.reach(goal, task.pos, signal)
 }
 
-async function calibrateExistingRails ({ tasks, version, workers, readBlock, signal, report, emit = () => {} }) {
+async function calibrateExistingRails ({ tasks, version, readBlock, signal, report, emit = () => {} }) {
+  checkSignal(signal)
   const Block = require('prismarine-block')(version)
-  const pending = []
+  let checked = 0
   for (const task of tasks.filter(task => RAILS.has(task.name))) {
+    checkSignal(signal)
     const wanted = Block.fromStateId(task.state, 0)
     const actual = readBlock(task.pos)
-    if (matchesTarget(wanted, actual)) continue
-    if (actual?.name !== wanted.name) throw new Error(`Existing rail calibration refused missing or changed material at ${task.id}`)
-    const ignored = dynamicProperties(wanted.name)
-    const observed = actual.getProperties()
-    if (Object.entries(wanted.getProperties()).some(([name, value]) => name !== 'shape' && !ignored.has(name) && String(observed[name]) !== String(value))) throw new Error(`Existing rail calibration refused a static property difference at ${task.id}`)
-    pending.push({ task, wanted, before: observed })
-  }
-  for (const { task, wanted, before } of pending) {
-    checkSignal(signal)
-    const worker = workers.filter(worker => typeof worker.executor?.adjustRail === 'function').slice().sort((a, b) => a.position.distanceTo(task.pos) - b.position.distanceTo(task.pos))[0]
-    if (!worker) throw new Error(`Existing rail calibration needs an adjustment executor at ${task.id}`)
-    const event = { type: 'rail-calibration', layer: task.pos.y, constructionLayer: report.currentLayer, workerId: worker.id, taskId: task.id, taskPos: task.pos, before }
-    emit({ ...event, phase: 'start' })
-    try {
-      await reachContainer(worker, task, signal)
-      checkSignal(signal)
-      const current = readBlock(task.pos)
-      if (current?.name !== wanted.name) throw new Error(`Rail changed before calibration at ${task.id}`)
-      const result = await worker.executor.adjustRail(task, wanted, signal)
-      checkSignal(signal)
-      const acknowledged = worker.bot?.blockAt ? worker.bot.blockAt(task.pos) : readBlock(task.pos)
-      if (result !== true || !matchesTarget(wanted, acknowledged)) throw new Error(`Existing rail calibration was not verified at ${task.id}`)
-      const propagationDeadline = Date.now() + 300
-      while (!matchesTarget(wanted, readBlock(task.pos))) {
-        checkSignal(signal)
-        if (Date.now() >= propagationDeadline) throw new Error(`Rail calibration cache propagation was not verified at ${task.id}`)
-        await new Promise((resolve, reject) => {
-          const cancel = () => { clearTimeout(timer); signal.removeEventListener('abort', cancel); try { checkSignal(signal) } catch (error) { reject(error) } }
-          const timer = setTimeout(() => { signal?.removeEventListener('abort', cancel); resolve() }, Math.min(50, propagationDeadline - Date.now()))
-          signal?.addEventListener('abort', cancel, { once: true })
-          if (signal?.aborted) cancel()
-        })
-      }
-      checkSignal(signal)
-      const after = readBlock(task.pos)
-      const record = { ...event, after: after.getProperties(), verifiedAt: Date.now() }
-      report.railCalibrations ||= []
-      report.railCalibrations.push(record)
-      emit({ ...record, phase: 'complete' })
-    } catch (error) {
-      emit({ ...event, phase: 'error', error: error.message })
+    if (!matchesTarget(wanted, actual)) {
+      const error = Object.assign(new Error(`Unsupported rail state change at ${task.id}; completed rails are read-only and cannot be adjusted or replaced`), { code: 'UNSUPPORTED_RAIL_STATE', taskId: task.id })
+      emit({ type: 'rail-verification', phase: 'error', layer: task.pos.y, constructionLayer: report?.currentLayer, taskId: task.id, taskPos: task.pos, wanted: wanted.getProperties(), actual: actual?.getProperties?.(), actualName: actual?.name, readOnly: true, error: error.message })
       throw error
     }
+    checked++
   }
-  return pending.length
+  checkSignal(signal)
+  const result = { verified: true, readOnly: true, checked }
+  if (report) report.railVerification = result
+  emit({ type: 'rail-verification', phase: 'complete', ...result })
+  return result
 }
 
 async function verifyBuildContents ({ tasks, workers, signal, report, emit, verifyContainer = require('../lib/physicalInventory').verifyContainer, approach = true, backend = 'physical-gui' }) {
@@ -616,63 +585,18 @@ async function selectVerificationBackend (options, { signal, snapshotFactory = r
   }
 }
 
-async function grantManagedCloneOperators (workers, options, verification, {
-  signal, onEvent = () => {}, clone = require('../scripts/server-clone'), readOperators = async state => JSON.parse(await fs.readFile(path.join(state.directory, 'ops.json'), 'utf8')), acquireLock = async () => {
-    const filename = path.join(clone.ROOT, '.operation-lock')
-    const lock = await fs.open(filename, 'wx', 0o600)
-    return async () => { await lock.close(); await fs.unlink(filename) }
-  }
-} = {}) {
-  if (options.serverProfile) return []
-  if (options.host !== '127.0.0.1' || options.port !== 25567) return []
-  if (options.version !== '1.21.4' || verification.backend !== 'managed-readonly-rcon' || !verification.snapshot?.readTickState) throw new Error('Clone operator grants require an attested managed endpoint')
+async function prepareMechanismStaging (plan, { selectedLayers = new Set(plan.layers), signal, mechanisms = require('../lib/physicalMechanisms') } = {}) {
   checkSignal(signal)
-  const release = await acquireLock()
-  try {
-    const state = clone.validateState(await clone.readJson(clone.STATE))
-    const results = []
-    for (const worker of workers) {
-      checkSignal(signal)
-      const bot = worker.bot
-      const username = bot?.username
-      const online = () => bot?._client?.state === 'play' && !bot._client.ended && bot.entity && bot.player?.uuid
-      if (!/^[A-Za-z0-9_]{1,16}$/.test(username || '') || !online()) throw new Error('Operator grants require the exact online spawned player')
-      const frozen = await verification.snapshot.readTickState({ signal })
-      if (frozen.frozen !== true || frozen.quiescent !== true) throw new Error('Operator grants require a frozen and quiescent clone')
-      const command = `execute if entity @a[name=${username},limit=1] run op ${username}`
-      const evidence = { backend: 'managed-clone-admin', command, pid: state.pid, startedAt: state.startedAt, requestedAt: new Date().toISOString() }
-      onEvent({ type: 'operator-grant-intent', workerId: worker.id, username, evidence, freezeEvidence: frozen.evidence || [] })
-      checkSignal(signal)
-      if (!online()) throw new Error('Operator player is no longer online')
-      evidence.response = await clone.commandForState(state, command)
-      checkSignal(signal)
-      const operators = await readOperators(state)
-      const confirmed = operators.some(operator => operator.name === username && operator.uuid?.toLowerCase() === bot.player.uuid.toLowerCase() && Number.isInteger(operator.level) && operator.level >= 2)
-      if (!confirmed) throw Object.assign(new Error(`Operator grant was not confirmed for ${username}`), { evidence: [evidence] })
-      const result = { workerId: worker.id, username, uuid: bot.player.uuid, verified: true, evidence }
-      results.push(result)
-      onEvent({ type: 'operator-grant-complete', ...result })
-      checkSignal(signal)
-    }
-    return results
-  } finally {
-    await release()
-  }
-}
-
-async function prepareMechanismStaging (plan, { selectedLayers = new Set(plan.layers), signal, mechanisms = require('../lib/physicalMechanisms'), verificationBackend = { backend: 'physical-gui' } } = {}) {
   const staged = mechanisms.normalizeMinecartEntities(plan, { frozen: true, allowDecorations: true }).filter(entity => entity.stagedStrategy && selectedLayers.has(entity.layer))
-  if (!staged.length) return { frozen: false, entityIds: [] }
-  if (!['managed-readonly-rcon', 'external-readonly-console'].includes(verificationBackend.backend) || !verificationBackend.snapshot?.readTickState) throw new Error('Enclosed minecart staging requires managed or external server freeze attestation')
+  if (staged.length) throw new Error(`Unsupported minecart staging at ${staged[0].id}; rail flattening and restoration are disabled`)
   checkSignal(signal)
-  const attestation = await verificationBackend.snapshot.readTickState({ signal })
-  checkSignal(signal)
-  if (attestation?.frozen !== true || attestation?.quiescent !== true) throw new Error('Minecart staging requires a frozen and quiescent server')
-  return { frozen: true, entityIds: staged.map(entity => entity.id), attestation }
+  return { frozen: false, entityIds: [] }
 }
 
 function createMechanismHooks (plan, { selectedLayers = new Set(plan.layers), recoveredEntities = [], frozen = false, mechanisms = require('../lib/physicalMechanisms'), inventory = require('../lib/physicalInventory'), verificationBackend = { backend: 'physical-gui' }, DecorationBuilder } = {}) {
   const entities = mechanisms.normalizeMinecartEntities(plan, { frozen, allowDecorations: true }).filter(entity => selectedLayers.has(entity.layer))
+  const staged = entities.find(entity => entity.stagedStrategy)
+  if (staged) throw new Error(`Unsupported minecart staging at ${staged.id}; rail flattening and restoration are disabled`)
   const completeBlueprint = plan.layers.every(layer => selectedLayers.has(layer))
   const decorations = (plan.entities?.length ? require('../lib/physicalDecorationsData').normalizeDecorationEntities(plan) : []).filter(entity => completeBlueprint || selectedLayers.has(Math.floor(entity.pos.y)))
   if (decorations.length && (!verificationBackend.snapshot?.readDecoration || !verificationBackend.snapshot?.verifyDecorations)) throw new Error('Decoration placement requires a strict read-only snapshot with decoration verification')
@@ -710,25 +634,7 @@ function createMechanismHooks (plan, { selectedLayers = new Set(plan.layers), re
         const recoveryDetails = previous ? { previousEntityId: previous.entityId, previousLayer: previous.layer } : {}
         emit({ type: 'entity-start', phase: 'mechanism', layer, railLayer: entity.railLayer, workerId: worker.id, entityId: entity.id, activeWorkers: 1, recoveryCheck: Boolean(previous), ...recoveryDetails })
         try {
-          const assertFrozen = entity.stagedStrategy
-            ? async () => {
-              checkSignal(signal)
-              if (!['managed-readonly-rcon', 'external-readonly-console'].includes(verificationBackend.backend) || !verificationBackend.snapshot?.readTickState) throw new Error('Staged minecart requires managed or external freeze attestation')
-              report.freezeEvidence ||= []
-              try {
-                const state = await verificationBackend.snapshot.readTickState({ signal })
-                report.freezeEvidence.push(...(state.evidence || []))
-                emit({ type: 'freeze-attestation', layer, entityId: entity.id, workerId: worker.id, ...state })
-                checkSignal(signal)
-                if (state.frozen !== true || state.quiescent !== true) throw new Error('Minecart staging requires a frozen and quiescent server')
-                return state
-              } catch (error) {
-                report.freezeEvidence.push(...(error.evidence || []))
-                throw error
-              }
-            }
-            : undefined
-          const result = await mechanisms.placeMinecart(worker.bot, entity, { signal, executor: worker.executor, claimedIds, assertFrozen, onEvent: event => emit({ ...event, layer, entityId: entity.id, workerId: worker.id }) })
+          const result = await mechanisms.placeMinecart(worker.bot, entity, { signal, executor: worker.executor, claimedIds, onEvent: event => emit({ ...event, layer, entityId: entity.id, workerId: worker.id }) })
           if (!result?.verified) throw new Error(`Entity placement was not verified: ${entity.id}`)
           checkSignal(signal)
           const recoveryCheck = previous ? { ...recoveryDetails, replaced: previous.entityId !== result.entityId } : undefined
@@ -1021,7 +927,6 @@ async function main (options = parseOptions()) {
     })
     if (workers.length !== options.bots) throw new Error('Incomplete worker pool')
     report.connectedBots = workers.length
-    report.operatorGrants = await grantManagedCloneOperators(workers, options, verificationBackend, { signal: controller.signal, onEvent: recordEvent })
     if (mechanismStaging.frozen) {
       const connectedStaging = await prepareMechanismStaging(plan, { selectedLayers: selected.selected, signal: controller.signal, verificationBackend })
       report.mechanismStaging = connectedStaging
@@ -1082,4 +987,4 @@ async function main (options = parseOptions()) {
 }
 
 if (require.main === module) main().catch(error => { console.error(error.stack); process.exitCode = 1 })
-module.exports = { parseOptions, loadBuildPlan, assertSchematicAlignment, grantManagedCloneOperators, fixturePlan, selectedPhysicalTasks, stageWorkers, runLayeredBuild, createMechanismHooks, verifyBuildContents, reachContainer, selectVerificationBackend, prepareMechanismStaging, updateVerificationMetrics, stopBots, createWorkerReporter, calibrateExistingRails, main }
+module.exports = { parseOptions, loadBuildPlan, assertSchematicAlignment, fixturePlan, selectedPhysicalTasks, stageWorkers, runLayeredBuild, createMechanismHooks, verifyBuildContents, reachContainer, selectVerificationBackend, prepareMechanismStaging, updateVerificationMetrics, stopBots, createWorkerReporter, calibrateExistingRails, main }

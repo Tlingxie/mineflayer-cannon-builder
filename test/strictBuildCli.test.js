@@ -2,7 +2,7 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const { Vec3 } = require('vec3')
 const { EventEmitter } = require('node:events')
-const { parseOptions, loadBuildPlan, assertSchematicAlignment, grantManagedCloneOperators, fixturePlan, stageWorkers, runLayeredBuild, selectedPhysicalTasks, stopBots, createMechanismHooks, verifyBuildContents, reachContainer, selectVerificationBackend, createWorkerReporter, calibrateExistingRails, prepareMechanismStaging, updateVerificationMetrics } = require('../examples/strictBuilder')
+const { parseOptions, loadBuildPlan, assertSchematicAlignment, fixturePlan, stageWorkers, runLayeredBuild, selectedPhysicalTasks, stopBots, createMechanismHooks, verifyBuildContents, reachContainer, selectVerificationBackend, createWorkerReporter, calibrateExistingRails, prepareMechanismStaging, updateVerificationMetrics } = require('../examples/strictBuilder')
 const { resolveState, preparePhysicalPlan } = require('../lib/strictSchematic')
 const { buildIdentity, parseRecovery } = require('../lib/buildRecovery')
 const { approachGoal } = require('../lib/physicalApproach')
@@ -112,9 +112,9 @@ function blueprint (cells) {
   return { name: 'test', version, origin: { x: 0, y: 64, z: 0 }, min: new Vec3(0, 64, 0), max: new Vec3(8, 67, 6), tasks, layers: [...new Set(tasks.map(t => t.pos.y))], air: [], entities: [], blockEntities: [] }
 }
 
-test('existing rail calibration only adjusts shape and preserves the active placement layer', async () => {
+test('existing rail verification refuses shape changes without writing or changing the active layer', async () => {
   const plan = blueprint([[0, 64, 0, 'powered_rail', { shape: 'ascending_east', powered: true }]])
-  let actual = resolveState('powered_rail', { shape: 'ascending_west', powered: false }, version)
+  const actual = resolveState('powered_rail', { shape: 'ascending_west', powered: false }, version)
   const report = { currentLayer: 65, highestPlacedLayer: 65 }
   const events = []
   let adjusts = 0
@@ -124,60 +124,50 @@ test('existing rail calibration only adjusts shape and preserves the active plac
     executor: {
       perform: async () => { throw new Error('Placement is forbidden') },
       dig: async () => { throw new Error('Digging is forbidden') },
-      adjustRail: async (_task, wanted) => { adjusts++; actual = wanted; return true }
+      adjustRail: async () => { adjusts++; return true }
     }
   }
-  await calibrateExistingRails({ tasks: plan.tasks, version, workers: [worker], readBlock: () => actual, report, emit: event => events.push(event) })
-  assert.equal(adjusts, 1)
+  await assert.rejects(calibrateExistingRails({ tasks: plan.tasks, version, workers: [worker], readBlock: () => actual, report, emit: event => events.push(event) }), error => error.code === 'UNSUPPORTED_RAIL_STATE' && /read-only/i.test(error.message))
+  assert.equal(adjusts, 0)
   assert.equal(report.currentLayer, 65)
   assert.equal(report.highestPlacedLayer, 65)
-  assert.equal(events[0].type, 'rail-calibration')
-  assert.equal(events[0].before.shape, 'ascending_west')
-  assert.equal(events.at(-1).after.shape, 'ascending_east')
+  assert.equal(actual.getProperties().shape, 'ascending_west')
+  assert.equal(events[0].type, 'rail-verification')
+  assert.equal(events[0].phase, 'error')
+  assert.equal(report.railCalibrations, undefined)
 })
 
-test('rail calibration refuses missing blocks, other static changes and unacknowledged adjustment', async () => {
+test('existing rail verification refuses missing material and static property differences without adjustment', async () => {
   const plan = blueprint([[0, 64, 0, 'powered_rail', { shape: 'ascending_east', waterlogged: true }]])
   let adjusts = 0
   const worker = { id: 'bot', position: new Vec3(0, 66, 0), executor: { adjustRail: async () => { adjusts++; return true } } }
   const run = actual => calibrateExistingRails({ tasks: plan.tasks, version, workers: [worker], readBlock: () => actual, report: { currentLayer: 65 }, emit: () => {} })
-  await assert.rejects(run(block('air')), /rail calibration.*refused/i)
-  await assert.rejects(run(resolveState('powered_rail', { shape: 'ascending_west', waterlogged: false }, version)), /static.*difference/i)
+  await assert.rejects(run(block('air')), { code: 'UNSUPPORTED_RAIL_STATE' })
+  await assert.rejects(run(resolveState('powered_rail', { shape: 'ascending_east', waterlogged: false }, version)), { code: 'UNSUPPORTED_RAIL_STATE' })
+  await assert.rejects(run(resolveState('powered_rail', { shape: 'ascending_west', waterlogged: true }, version)), { code: 'UNSUPPORTED_RAIL_STATE' })
   assert.equal(adjusts, 0)
-  await assert.rejects(run(resolveState('powered_rail', { shape: 'ascending_west', waterlogged: true }, version)), /not verified/i)
-  assert.equal(adjusts, 1)
 })
 
-test('rail calibration waits for delayed shared cache after the executing worker acknowledges', async () => {
-  const plan = blueprint([[0, 64, 0, 'powered_rail', { shape: 'ascending_east' }]])
-  const changed = resolveState('powered_rail', { shape: 'ascending_west' }, version)
-  let shared = changed
-  let acknowledged = changed
-  let timer
-  const worker = {
-    id: 'writer',
-    position: new Vec3(0, 66, 0),
-    bot: { blockAt: () => acknowledged },
-    executor: { adjustRail: async (_task, wanted) => { acknowledged = wanted; timer = setTimeout(() => { shared = wanted }, 80); return true } }
-  }
+test('matching rails are verified read-only while runtime power differences remain ignored', async () => {
+  const plan = blueprint([[0, 64, 0, 'powered_rail', { shape: 'ascending_east', powered: true }], [1, 64, 0, 'stone']])
+  const actual = resolveState('powered_rail', { shape: 'ascending_east', powered: false }, version)
   const events = []
-  try {
-    await calibrateExistingRails({ tasks: plan.tasks, version, workers: [worker], readBlock: () => shared, report: { currentLayer: 65 }, emit: event => events.push(event) })
-    assert.equal(shared.getProperties().shape, 'ascending_east')
-    assert.equal(events.at(-1).phase, 'complete')
-  } finally { clearTimeout(timer) }
+  const report = { currentLayer: 65 }
+  const result = await calibrateExistingRails({ tasks: plan.tasks, version, readBlock: () => actual, report, emit: event => events.push(event) })
+  assert.deepEqual(result, { verified: true, readOnly: true, checked: 1 })
+  assert.deepEqual(report.railVerification, result)
+  assert.equal(events.at(-1).phase, 'complete')
+  assert.equal(report.currentLayer, 65)
 })
 
-test('rail calibration aborts propagation waiting and fails when shared cache never catches up', async () => {
+test('rail verification checks cancellation before reads and never prefers a worker cache over the shared snapshot', async () => {
   const plan = blueprint([[0, 64, 0, 'powered_rail', { shape: 'ascending_east' }]])
   const changed = resolveState('powered_rail', { shape: 'ascending_west' }, version)
-  let acknowledged = changed
-  const worker = { id: 'writer', position: new Vec3(0, 66, 0), bot: { blockAt: () => acknowledged }, executor: { adjustRail: async (_task, wanted) => { acknowledged = wanted; return true } } }
-  const run = signal => calibrateExistingRails({ tasks: plan.tasks, version, workers: [worker], readBlock: () => changed, signal, report: { currentLayer: 65 } })
-  await assert.rejects(run(), /propagation/i)
+  const worker = { id: 'writer', bot: { blockAt: () => Block.fromStateId(plan.tasks[0].state, 0) } }
+  await assert.rejects(calibrateExistingRails({ tasks: plan.tasks, version, workers: [worker], readBlock: () => changed, report: {} }), { code: 'UNSUPPORTED_RAIL_STATE' })
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(new Error('cancel calibration')), 15)
-  try { await assert.rejects(run(controller.signal), /cancel calibration/) } finally { clearTimeout(timer) }
+  controller.abort(new Error('cancel verification'))
+  await assert.rejects(calibrateExistingRails({ tasks: plan.tasks, version, readBlock: () => assert.fail('Read after cancellation'), signal: controller.signal, report: {} }), /cancel verification/)
 })
 
 test('stage distributes 30 workers in a 6 by 5 grid with loaded steps no longer than 8 blocks', async () => {
@@ -874,44 +864,30 @@ test('fresh verification rate excludes resumed layers and does not count derived
   assert.match(report.freshVerifiedBlocksDefinition, /already-correct/)
 })
 
-test('enclosed minecart staging requires a managed frozen attestation only for selected layers', async () => {
+test('enclosed minecart staging is rejected before freeze attestation or world operations', async () => {
   const plan = blueprint([[0, 64, 0, 'stone'], [0, 65, 0, 'glass']])
   const mechanisms = { normalizeMinecartEntities: (_plan, { frozen }) => [{ id: 'cart', layer: frozen ? 64 : 65, stagedStrategy: frozen ? { type: 'frozen-flat-rail' } : undefined }] }
-  await assert.rejects(prepareMechanismStaging(plan, { mechanisms }), /managed.*attestation/)
+  await assert.rejects(prepareMechanismStaging(plan, { mechanisms }), /unsupported.*staging/i)
   const untouched = await prepareMechanismStaging(plan, { mechanisms, selectedLayers: new Set([63]) })
   assert.equal(untouched.frozen, false)
-  const evidence = [{ command: 'tick query' }]
-  const verificationBackend = { backend: 'managed-readonly-rcon', snapshot: { readTickState: async () => ({ frozen: true, quiescent: true, evidence }) } }
-  const result = await prepareMechanismStaging(plan, { mechanisms, verificationBackend })
-  assert.equal(result.frozen, true)
-  assert.deepEqual(result.entityIds, ['cart'])
-  assert.deepEqual(result.attestation.evidence, evidence)
-  verificationBackend.snapshot.readTickState = async () => ({ frozen: false, quiescent: true })
-  await assert.rejects(prepareMechanismStaging(plan, { mechanisms, verificationBackend }), /frozen and quiescent/)
+  const verificationBackend = { backend: 'managed-readonly-rcon', snapshot: { readTickState: async () => assert.fail('Staging must reject before freeze attestation') } }
+  await assert.rejects(prepareMechanismStaging(plan, { mechanisms, verificationBackend }), /unsupported.*staging/i)
+  assert.deepEqual(await prepareMechanismStaging(plan, { mechanisms: { normalizeMinecartEntities: () => [{ id: 'ordinary', layer: 64 }] }, verificationBackend }), { frozen: false, entityIds: [] })
+  const controller = new AbortController()
+  controller.abort(new Error('cancel staging preflight'))
+  await assert.rejects(prepareMechanismStaging(plan, { signal: controller.signal, mechanisms: { normalizeMinecartEntities: () => assert.fail('Normalized after cancellation') } }), /cancel staging preflight/)
 })
 
-test('staged minecart hooks reattest the live server and journal staging actions', async () => {
+test('mechanism hooks reject legacy staged strategies before dispatching any operation', () => {
   const plan = blueprint([[0, 64, 0, 'stone']])
-  const workers = [{ id: 'bot', position: new Vec3(0, 68, 0), bot: {}, executor: {} }]
-  const events = []
-  const report = {}
-  const hooks = createMechanismHooks(plan, {
+  assert.throws(() => createMechanismHooks(plan, {
     frozen: true,
-    verificationBackend: { backend: 'managed-readonly-rcon', snapshot: { readTickState: async () => ({ frozen: true, quiescent: true, evidence: [{ command: 'tick query' }] }) } },
+    verificationBackend: { backend: 'managed-readonly-rcon', snapshot: { readTickState: async () => assert.fail('Read live freeze state') } },
     mechanisms: {
       normalizeMinecartEntities: (_plan, { frozen }) => [{ id: 'cart', name: 'hopper_minecart', layer: frozen ? 64 : 65, railLayer: 64, pos: new Vec3(0, 64, 0), stagedStrategy: { type: 'frozen-flat-rail' } }],
-      placeMinecart: async (_bot, _entity, options) => {
-        assert.equal((await options.assertFrozen()).frozen, true)
-        options.onEvent({ type: 'minecart-staging', phase: 'flatten' })
-        return { verified: true, entityId: 30 }
-      }
+      placeMinecart: async () => assert.fail('Spawned a staged minecart')
     }
-  })
-  await hooks.afterLayer({ layer: 64, workers, report, emit: event => events.push(event) })
-  assert.equal(report.entitiesVerified, 1)
-  assert.equal(report.freezeEvidence.length, 1)
-  assert.equal(events.some(event => event.type === 'freeze-attestation' && event.entityId === 'cart'), true)
-  assert.equal(events.some(event => event.type === 'minecart-staging' && event.workerId === 'bot'), true)
+  }), /unsupported.*staging/i)
 })
 
 test('partial builds do not require higher entities or ignite incomplete higher frames', async () => {
@@ -987,26 +963,30 @@ test('recovery rechecks completed lower layers without placing and cleans audite
   assert.equal(env.readBlock(plan.air[0]).name, 'air')
 })
 
-test('recovery, layer completion and final verification calibrate lower rails without replacing them', async () => {
-  const plan = blueprint([[0, 64, 0, 'stone'], [1, 64, 0, 'powered_rail', { shape: 'ascending_east' }], [0, 65, 0, 'glass']])
-  const env = environment(plan)
-  const rail = plan.tasks[1]
-  const changed = resolveState('powered_rail', { shape: 'ascending_west' }, version)
-  env.world.set('0,64,0', block('stone'))
-  env.world.set('1,64,0', changed)
-  let adjustments = 0
-  for (const worker of env.workers) worker.executor.adjustRail = async (task, wanted) => { adjustments++; env.world.set(key(task.pos), wanted); return true }
-  const report = await runLayeredBuild({
-    ...env,
-    recovery: { highestLayer: 65, completedLayers: [64], supports: [] },
-    settleMs: 0,
-    afterLayer: async () => env.world.set(key(rail.pos), changed),
-    afterBuild: async () => env.world.set(key(rail.pos), changed)
-  })
-  assert.equal(report.status, 'verified')
-  assert.equal(adjustments, 3)
-  assert.equal(report.railCalibrations.length, 3)
-  assert.equal(env.history.some(event => event.type === 'place' && event.layer < 65), false)
+test('recovery, layer completion and final verification reject lower rail changes without adjustment', async () => {
+  for (const stage of ['recovery', 'layer', 'final']) {
+    const plan = blueprint([[0, 64, 0, 'stone'], [1, 64, 0, 'powered_rail', { shape: 'ascending_east' }], [0, 65, 0, 'glass']])
+    const env = environment(plan)
+    const rail = plan.tasks[1]
+    const changed = resolveState('powered_rail', { shape: 'ascending_west' }, version)
+    env.world.set('0,64,0', block('stone'))
+    env.world.set(key(rail.pos), stage === 'recovery' ? changed : Block.fromStateId(rail.state, 0))
+    let adjustments = 0
+    for (const worker of env.workers) worker.executor.adjustRail = async () => { adjustments++; return true }
+    const report = {}
+    await assert.rejects(runLayeredBuild({
+      ...env,
+      report,
+      recovery: { highestLayer: 65, completedLayers: [64], supports: [] },
+      settleMs: 0,
+      afterLayer: async () => { if (stage === 'layer') env.world.set(key(rail.pos), changed) },
+      afterBuild: async () => { if (stage === 'final') env.world.set(key(rail.pos), changed) }
+    }), { code: 'UNSUPPORTED_RAIL_STATE' }, stage)
+    assert.equal(adjustments, 0, stage)
+    assert.equal(env.readBlock(rail.pos).getProperties().shape, 'ascending_west', stage)
+    assert.equal(report.railCalibrations, undefined, stage)
+    assert.equal(env.history.some(event => event.type === 'place' && event.layer < 65), false, stage)
+  }
 })
 
 test('recovery fails on damaged lower layers or changed support material without any writes', async () => {
@@ -1022,16 +1002,15 @@ test('recovery fails on damaged lower layers or changed support material without
   assert.equal(env.history.length, 0)
 })
 
-test('rail calibration retains owned supports until the pre-cleanup barrier and rechecks after digging', async () => {
+test('rail verification rechecks completed rails after owned support cleanup without repair', async () => {
   const plan = blueprint([[0, 64, 0, 'powered_rail', { shape: 'north_south' }], [1, 65, 0, 'stone']])
-  const support = persistentSupport(-1, 64, 0, { purpose: 'rail-calibration', releaseLayer: 65 })
+  const support = persistentSupport(-1, 64, 0, { purpose: 'rail-support', releaseLayer: 65 })
   const changed = resolveState('powered_rail', { shape: 'ascending_east' }, version)
   const rail = plan.tasks[0]
   let adjustments = 0
   const env = environment(plan, {
     perform: async task => {
       if (task.type === 'dig' && key(task.pos) === key(support.pos)) {
-        assert.equal(adjustments, 1, 'calibration must finish before releasing its safe intermediate support')
         env.world.set(key(rail.pos), changed)
       }
     }
@@ -1039,30 +1018,27 @@ test('rail calibration retains owned supports until the pre-cleanup barrier and 
   env.world.set(key(rail.pos), Block.fromStateId(rail.state, 0))
   env.world.set(key(support.pos), block('dirt'))
   for (const worker of env.workers) {
-    worker.executor.adjustRail = async (task, wanted) => {
-      if (adjustments === 0) assert.equal(env.readBlock(support.pos).name, 'dirt')
-      adjustments++
-      env.world.set(key(task.pos), wanted)
-      return true
-    }
+    worker.executor.adjustRail = async () => { adjustments++; return true }
   }
-  const report = await runLayeredBuild({ ...env, settleMs: 0, recovery: { highestLayer: 65, completedLayers: [64], supports: [], persistentOwned: [support] }, afterLayer: async () => env.world.set(key(rail.pos), changed) })
-  assert.equal(report.status, 'verified')
-  assert.equal(adjustments, 2)
+  const report = {}
+  await assert.rejects(runLayeredBuild({ ...env, report, settleMs: 0, recovery: { highestLayer: 65, completedLayers: [64], supports: [], persistentOwned: [support] } }), { code: 'UNSUPPORTED_RAIL_STATE' })
+  assert.equal(adjustments, 0)
   assert.equal(env.readBlock(support.pos).name, 'air')
   assert.equal(report.highestPlacedLayer, 65)
   assert.equal(env.history.some(event => event.type === 'place' && event.layer < 65), false)
 })
 
-test('a failed pre-cleanup rail calibration preserves owned supports and prevents advancing', async () => {
+test('a failed pre-cleanup rail verification preserves owned supports and prevents advancing', async () => {
   const plan = blueprint([[0, 64, 0, 'powered_rail', { shape: 'north_south' }], [0, 65, 0, 'stone'], [0, 66, 0, 'stone']])
-  const support = persistentSupport(-1, 64, 0, { purpose: 'rail-calibration', releaseLayer: 65 })
+  const support = persistentSupport(-1, 64, 0, { purpose: 'rail-support', releaseLayer: 65 })
   const env = environment(plan)
   env.world.set(key(plan.tasks[0].pos), Block.fromStateId(plan.tasks[0].state, 0))
   env.world.set(key(support.pos), block('dirt'))
-  for (const worker of env.workers) worker.executor.adjustRail = async () => false
+  let adjustments = 0
+  for (const worker of env.workers) worker.executor.adjustRail = async () => { adjustments++; return false }
   const report = {}
-  await assert.rejects(runLayeredBuild({ ...env, report, settleMs: 0, recovery: { highestLayer: 65, completedLayers: [64], supports: [], persistentOwned: [support] }, afterLayer: async () => env.world.set(key(plan.tasks[0].pos), resolveState('powered_rail', { shape: 'ascending_east' }, version)) }), /calibration.*not verified/i)
+  await assert.rejects(runLayeredBuild({ ...env, report, settleMs: 0, recovery: { highestLayer: 65, completedLayers: [64], supports: [], persistentOwned: [support] }, afterLayer: async () => env.world.set(key(plan.tasks[0].pos), resolveState('powered_rail', { shape: 'ascending_east' }, version)) }), { code: 'UNSUPPORTED_RAIL_STATE' })
+  assert.equal(adjustments, 0)
   assert.equal(env.readBlock(support.pos).name, 'dirt')
   assert.equal(env.history.some(event => event.layer === 66 || (event.type === 'dig' && event.pos === key(support.pos))), false)
   assert.equal(report.persistentOwned.length, 1)
@@ -1345,54 +1321,9 @@ test('a different workers unconfirmed waterlogging prevents predicted wet state 
   assert.equal(env.history.some(event => event.layer === 65), false)
 })
 
-test('clone operator grants require frozen identity, exact online names and durable matching operator UUIDs', async () => {
-  const options = { host: '127.0.0.1', port: 25567, version: '1.21.4' }
-  const workers = [0, 1].map(index => ({ id: `aligned0${index}`, bot: { username: `aligned0${index}`, player: { uuid: `uuid-${index}` }, entity: {}, _client: { state: 'play' } } }))
-  const commands = []
-  const events = []
-  const operators = []
-  let frozen = true
-  let checks = 0
-  let unlocks = 0
-  const snapshot = { readTickState: async () => { checks++; return { frozen, quiescent: true, evidence: [{ command: 'tick query', response: 'frozen' }] } } }
-  const clone = {
-    STATE: '/stub/run.json',
-    readJson: async () => ({ pid: 12, startedAt: 'now', directory: '/stub/clone' }),
-    validateState: state => state,
-    commandForState: async (state, command) => {
-      assert.equal(state.pid, 12)
-      commands.push(command)
-      const worker = workers[commands.length - 1]
-      operators.push({ name: worker.bot.username, uuid: worker.bot.player.uuid, level: 4 })
-      return `Made ${worker.bot.username} a server operator`
-    }
-  }
-  const settings = { clone, readOperators: async () => operators, acquireLock: async () => async () => { unlocks++ }, onEvent: event => events.push(event) }
-  const result = await grantManagedCloneOperators(workers, options, { backend: 'managed-readonly-rcon', snapshot }, settings)
-  assert.equal(result.length, 2)
-  assert.equal(checks, 2)
-  assert.deepEqual(commands, workers.map(worker => `execute if entity @a[name=${worker.bot.username},limit=1] run op ${worker.bot.username}`))
-  assert.equal(events.filter(event => event.type === 'operator-grant-complete').length, 2)
-  assert.equal(unlocks, 1)
-  frozen = false
-  await assert.rejects(grantManagedCloneOperators(workers, options, { backend: 'managed-readonly-rcon', snapshot }, settings), /frozen/)
-  assert.equal(commands.length, 2)
-  frozen = true
-  workers[0].bot._client.state = 'disconnected'
-  await assert.rejects(grantManagedCloneOperators(workers, options, { backend: 'managed-readonly-rcon', snapshot }, settings), /online/)
-  assert.equal(commands.length, 2)
-})
-
-test('clone operator intent cancellation prevents the command and an unconfirmed grant fails closed', async () => {
-  const options = { host: '127.0.0.1', port: 25567, version: '1.21.4' }
-  const worker = { id: 'aligned00', bot: { username: 'aligned00', player: { uuid: 'uuid' }, entity: {}, _client: { state: 'play' } } }
-  const controller = new AbortController()
-  let commands = 0
-  const clone = { readJson: async () => ({}), validateState: state => state, commandForState: async () => { commands++; return 'Not found' } }
-  const settings = { clone, readOperators: async () => [], acquireLock: async () => async () => {}, signal: controller.signal, onEvent: () => controller.abort(new Error('cancel before op')) }
-  const verification = { backend: 'managed-readonly-rcon', snapshot: { readTickState: async () => ({ frozen: true, quiescent: true }) } }
-  await assert.rejects(grantManagedCloneOperators([worker], options, verification, settings), /cancel before op/)
-  assert.equal(commands, 0)
-  await assert.rejects(grantManagedCloneOperators([worker], options, verification, { ...settings, signal: undefined, onEvent: () => {} }), /operator.*confirmed/i)
-  assert.equal(commands, 1)
+test('strict CLI has no automatic operator grant or revocation path', () => {
+  const cli = require('../examples/strictBuilder')
+  assert.equal(cli.grantManagedCloneOperators, undefined)
+  const source = require('node:fs').readFileSync(require.resolve('../examples/strictBuilder'), 'utf8')
+  assert.doesNotMatch(source, /\b(?:op|deop)\s+\$\{|ops\.json|operatorGrants/)
 })

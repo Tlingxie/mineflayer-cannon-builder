@@ -147,6 +147,19 @@ test('same-layer matching slabs use the occupied side half without merging the r
   assert.equal(f.executor.safeReference(f.bot.blockAt(side), f.wanted), false)
 })
 
+test('state-controlled opposite slab halves can click the occupied side without merging the source', () => {
+  for (const sourceType of ['top', 'bottom']) {
+    const targetType = sourceType === 'top' ? 'bottom' : 'top'
+    const f = fixture('smooth_quartz_slab', { type: targetType, waterlogged: false })
+    f.executor.useStateComponents = true
+    const side = f.pos.offset(-1, 0, 0)
+    f.cells.set(side.toString(), f.block('smooth_quartz_slab', side, { type: sourceType, waterlogged: false }))
+    const faces = f.executor.makeGoal(f.task).facesPos.filter(([, , ref]) => ref.equals(side))
+    assert.ok(faces.length)
+    assert.ok(faces.every(([, point]) => sourceType === 'bottom' ? point.y < f.pos.y + 0.5 : point.y > f.pos.y + 0.5))
+  }
+})
+
 test('state-controlled end rods can be placed on the floor independently of their final orientation', () => {
   const f = fixture('end_rod', { facing: 'west' })
   f.executor.useStateComponents = true
@@ -1261,31 +1274,22 @@ test('rail replacement digs the selectable top even though its collision shape i
   }
 })
 
-test('rail shape calibration takes a safe reverse debug-stick step without rebuilding', async () => {
+test('a rail with the wrong shape is replaced only through ordinary active-layer placement', async () => {
   const f = fixture('powered_rail', { shape: 'ascending_south', powered: true, waterlogged: false })
   f.cells.set(f.pos.toString(), f.block('powered_rail', f.pos, { shape: 'north_south', powered: true, waterlogged: false }))
   const support = f.pos.offset(0, 0, 1)
   f.cells.set(support.toString(), f.block('stone', support))
-  let sneaking = false
-  f.bot.setControlState = (name, state) => { if (name === 'sneak') sneaking = state }
-  let clicks = 0
-  f.bot._genericPlace = async block => {
-    assert.ok(block.position.equals(f.pos))
-    assert.equal(f.bot.heldItem.name, 'debug_stick')
-    assert.equal(sneaking, true)
-    assert.deepEqual(f.bot.heldItem.components.find(c => c.type === 'debug_stick_state').data, {
-      type: 'compound', value: { 'minecraft:powered_rail': { type: 'string', value: 'shape' } }
-    })
-    clicks++
-    f.cells.set(f.pos.toString(), f.block('powered_rail', f.pos, { shape: 'ascending_south', powered: true, waterlogged: false }))
-  }
+  f.executor.useStateComponents = true
+  f.bot.world.raycast = require('prismarine-world/src/worldsync').prototype.raycast
+  const floor = f.pos.offset(0, -1, 0)
+  f.cells.set(floor.toString(), f.block('stone', floor))
   assert.equal(await f.executor.perform(f.task, { layer: 5 }), true)
-  assert.equal(clicks, 1)
-  assert.equal(sneaking, false)
-  assert.equal(f.events.some(e => Array.isArray(e) && e[0] === 'dig'), false)
+  assert.equal(f.bot.heldItem.name, 'powered_rail')
+  assert.equal(f.events.filter(e => Array.isArray(e) && e[0] === 'dig').length, 1)
+  assert.equal(f.events.filter(e => Array.isArray(e) && e[0] === 'place').length, 1)
 })
 
-test('rail calibration refuses cycles through unsupported ascending intermediate shapes', async () => {
+test('rail adjustment never mutates an existing shape', async () => {
   const f = fixture('powered_rail', { shape: 'ascending_north', powered: true, waterlogged: false })
   f.cells.set(f.pos.toString(), f.block('powered_rail', f.pos, { shape: 'north_south', powered: true, waterlogged: false }))
   const support = f.pos.offset(0, 0, -1)
@@ -1346,51 +1350,35 @@ test('rigid rail support respects proven server support-shape overrides', () => 
   assert.equal(isRigidRailSupport(Block.fromProperties('snow', { layers: '7' }, 0)), false)
 })
 
-test('rail debug calibration accepts a hopper rim as permanent ascending support', async () => {
+test('rail state checking does not click a rail even when its ascending support is valid', async () => {
   const f = fixture('activator_rail', { shape: 'ascending_east', powered: false, waterlogged: false })
   f.cells.set(f.pos.toString(), f.block('activator_rail', f.pos, { shape: 'east_west', powered: false, waterlogged: false }))
   const support = f.pos.offset(1, 0, 0)
   f.cells.set(support.toString(), f.block('hopper', support, { facing: 'down' }))
-  let clicks = 0
-  f.bot._genericPlace = async ref => {
-    assert.ok(ref.position.equals(f.pos))
-    clicks++
-    f.cells.set(f.pos.toString(), f.block('activator_rail', f.pos, f.wanted.getProperties()))
-  }
-  assert.equal(await f.executor.adjustRail(f.task, f.wanted), true)
-  assert.equal(clicks, 1)
+  assert.equal(await f.executor.adjust(f.task), false)
+  assert.deepEqual(f.events, [])
 })
 
-test('rail calibration uses its explicit temporary target without registering a new plan state', async () => {
+test('physical builder exposes no rail state editing or debug stick equipment API', () => {
   const f = fixture('powered_rail', { shape: 'ascending_east', powered: true, waterlogged: false })
-  f.cells.set(f.pos.toString(), f.block('powered_rail', f.pos, f.wanted.getProperties()))
-  const flat = Block.fromProperties('powered_rail', { shape: 'east_west', powered: true, waterlogged: false }, 0)
-  const flatTask = { ...f.task, state: flat.stateId }
-  let clicks = 0
-  f.bot._genericPlace = async ref => {
-    assert.ok(ref.position.equals(f.pos))
-    assert.equal(f.bot.heldItem.name, 'debug_stick')
-    clicks++
-    f.cells.set(f.pos.toString(), f.block('powered_rail', f.pos, flat.getProperties()))
-  }
-  assert.equal(await f.executor.adjustRail(flatTask, flat), true)
-  assert.equal(clicks, 1)
-  assert.equal(f.bot.blockAt(f.pos).getProperties().shape, 'east_west')
+  assert.equal(f.executor.equipDebugStick, undefined)
+  assert.equal(f.executor.adjustRail, undefined)
 })
 
-test('copper bulb memory is calibrated by one debug-stick click while power is preserved', async () => {
+test('copper bulbs use ordinary material placement to initialize their memory state', async () => {
   for (const [name, lit] of [['waxed_copper_bulb', true], ['copper_bulb', false], ['waxed_oxidized_copper_bulb', true]]) {
     const f = fixture(name, { lit, powered: false })
     f.cells.set(f.pos.toString(), f.block(name, f.pos, { lit: !lit, powered: true }))
     f.bot.world.raycast = require('prismarine-world/src/worldsync').prototype.raycast
+    f.executor.useStateComponents = true
+    const floor = f.pos.offset(0, -1, 0)
+    f.cells.set(floor.toString(), f.block('stone', floor))
     let clicks = 0
-    f.bot.dig = async () => { throw new Error('Copper bulb must not be rebuilt') }
     f.bot._genericPlace = async block => {
-      assert.ok(block.position.equals(f.pos))
-      assert.equal(f.bot.heldItem.name, 'debug_stick')
-      assert.deepEqual(f.bot.heldItem.components.find(c => c.type === 'debug_stick_state').data, {
-        type: 'compound', value: { ['minecraft:' + name]: { type: 'string', value: 'lit' } }
-      })
+      assert.ok(block.position.equals(floor))
+      assert.equal(f.bot.heldItem.name, name)
+      const state = f.bot.heldItem.components.find(c => c.type === 'block_state').data.properties
+      assert.equal(state.find(p => p.name === 'lit').value, String(lit))
       clicks++
       const acknowledged = f.block(name, f.pos, { lit, powered: true })
       f.cells.set(f.pos.toString(), acknowledged)
@@ -1402,16 +1390,33 @@ test('copper bulb memory is calibrated by one debug-stick click while power is p
   }
 })
 
-test('unacknowledged copper bulb calibration never falls back to replacement', async () => {
+test('copper bulb state checking never clicks an existing bulb', async () => {
   const f = fixture('waxed_copper_bulb', { lit: true, powered: true })
   f.cells.set(f.pos.toString(), f.block('waxed_copper_bulb', f.pos, { lit: false, powered: true }))
+  assert.equal(await f.executor.adjust(f.task), false)
+  assert.deepEqual(f.events, [])
+  assert.equal(f.executor.satisfied(f.task), false)
+})
+
+test('debug stick equipment and legacy calibration requests are rejected before any action', async () => {
+  const f = fixture()
+  for (const name of ['debug_stick', 'minecraft:debug_stick']) {
+    await assert.rejects(f.executor.equip(name), { code: 'DEBUG_STICK_FORBIDDEN' })
+  }
+  await assert.rejects(f.executor.interact(f.task, undefined, { debugProperty: 'shape' }), { code: 'DEBUG_STICK_FORBIDDEN' })
+  assert.deepEqual(f.events, [])
+  assert.ok(f.bot.inventory.slots.every(slot => slot === null))
+})
+
+test('ordinary interaction refuses a target changed during equipment selection', async () => {
+  const f = fixture('note_block', { note: 1 })
+  f.cells.set(f.pos.toString(), f.block('note_block', f.pos, { note: 0 }))
   f.bot.world.raycast = require('prismarine-world/src/worldsync').prototype.raycast
+  f.executor.equip = async () => { f.cells.set(f.pos.toString(), f.block('stone', f.pos)) }
   let clicks = 0
   f.bot._genericPlace = async () => { clicks++ }
-  f.bot.dig = async () => { throw new Error('Copper bulb must not be rebuilt') }
-  await assert.rejects(f.executor.perform(f.task, { layer: 5 }), /Copper bulb calibration was not acknowledged/)
-  assert.equal(clicks, 1)
-  assert.equal(f.executor.satisfied(f.task), false)
+  await assert.rejects(f.executor.interact(f.task), /Interaction target or face changed/)
+  assert.equal(clicks, 0)
 })
 
 test('fluid use-item stays standing when its reference is interactive', async () => {
@@ -1525,7 +1530,7 @@ test('a source mutation must receive raw and sequence ACK before another worker 
   assert.equal(solid.bot._client.listenerCount('acknowledge_player_digging'), 0)
 })
 
-test('ordinary dig and debug interaction also wait outside a fluid exclusive window', async () => {
+test('ordinary digging and interaction wait outside a fluid exclusive window', async () => {
   const { PhysicalMutationCoordinator } = require('../lib/physicalMutations')
   for (const operation of ['dig', 'interact']) {
     const f = fixture()
@@ -1846,7 +1851,7 @@ test('lever selection outlines support ordinary power adjustment for every attac
       let clicks = 0
       f.bot._genericPlace = async ref => {
         assert.ok(ref.position.equals(f.pos))
-        assert.equal(f.bot.heldItem.name, 'lever')
+        assert.equal(f.bot.heldItem.name, 'stick')
         assert.equal(f.bot.controlState.sneak, false)
         clicks++
         f.cells.set(f.pos.toString(), f.block('lever', f.pos, properties))
@@ -1894,7 +1899,7 @@ test('fluid replacement does not expand to unaudited tasks or non-dirt materials
 test('digging switches away from debug stick before starting the ordinary dig', async () => {
   const f = fixture('dirt')
   f.cells.set(f.pos.toString(), f.block('dirt', f.pos))
-  await f.executor.equipDebugStick('powered_rail', 'shape')
+  f.bot.heldItem = new f.executor.Item(registry.itemsByName.debug_stick.id, 1)
   f.executor.reach = async () => {}
   f.bot.dig = async block => {
     assert.equal(f.bot.heldItem.name, 'diamond_pickaxe')

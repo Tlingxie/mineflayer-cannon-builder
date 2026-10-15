@@ -108,7 +108,7 @@ test('minecart scheduling uses collision shapes and excludes touching or noncoll
   assert.equal(normalizeMinecartEntities(plan)[0].layer, 0)
 })
 
-test('only attested frozen enclosed hopper carts use a collision-free flat-rail staging pose', () => {
+test('enclosed carts that would require temporary rail flattening are explicitly unsupported', () => {
   const rail = task('powered_rail', 74, -43, 43, { shape: 'ascending_east', waterlogged: true })
   const plan = {
     version: '1.21.4',
@@ -118,14 +118,7 @@ test('only attested frozen enclosed hopper carts use a collision-free flat-rail 
     entities: [{ regionPosition: { x: 0, y: 0, z: 0 }, data: { id: 'minecraft:hopper_minecart', Pos: [74.4275, -42.51, 43.5], Items: [] } }]
   }
   assert.equal(normalizeMinecartEntities(plan)[0].layer, -42)
-  const staged = normalizeMinecartEntities(plan, { frozen: true })[0]
-  assert.equal(staged.layer, -43)
-  assert.equal(staged.stagedStrategy.type, 'frozen-flat-rail')
-  assert.equal(staged.stagedStrategy.flatShape, 'east_west')
-  assert.deepEqual(staged.spawnPos, new Vec3(74.5, -42.9375, 43.5))
-  assert.ok(staged.spawnPos.y + 0.7 < -42)
-  assert.ok(staged.spawnPos.distanceTo(staged.pos) < 0.8)
-  assert.ok(staged.collisionTaskIds.includes('74,-42,43'))
+  assert.throws(() => normalizeMinecartEntities(plan, { frozen: true }), /Unsupported frozen minecart staging/)
   const open = { ...plan, tasks: plan.tasks.filter(t => t.id !== '75,-43,43') }
   assert.equal(normalizeMinecartEntities(open, { frozen: true })[0].stagedStrategy, undefined)
 })
@@ -176,66 +169,48 @@ function stagedCartFixture () {
   return { bot, entity, executor, assertFrozen, calls }
 }
 
-test('frozen staging checks before each action, spawns below the cap and restores the rail', async () => {
+test('staged minecarts are rejected before freeze reads, rail changes or entity placement', async () => {
   const fixture = stagedCartFixture()
   const events = []
-  const result = await placeMinecart(fixture.bot, fixture.entity, { ...fixture, onEvent: event => events.push(event) })
-  assert.deepEqual(fixture.calls, ['frozen', 'east_west', 'frozen', 'spawn', 'frozen', 'ascending_east'])
-  assert.equal(result.entityId, 30)
-  assert.equal(result.stagedStrategy, 'frozen-flat-rail')
+  await assert.rejects(placeMinecart(fixture.bot, fixture.entity, { ...fixture, onEvent: event => events.push(event) }), /Unsupported frozen minecart staging/)
+  assert.deepEqual(fixture.calls, [])
+  assert.equal(Object.keys(fixture.bot.entities).length, 0)
   assert.equal(fixture.bot.blockAt(fixture.entity.railPos).getProperties().shape, 'ascending_east')
-  assert.deepEqual(events.map(event => event.phase), ['flatten', 'restore'])
+  assert.deepEqual(events, [])
 })
 
-test('frozen staging stops before a spawn when the freeze attestation is lost', async () => {
+test('unrecognized staged strategies cannot fall back to minecart placement', async () => {
   const fixture = stagedCartFixture()
-  let checks = 0
-  await assert.rejects(placeMinecart(fixture.bot, fixture.entity, {
-    executor: fixture.executor,
-    assertFrozen: async () => ({ frozen: ++checks === 1, quiescent: true })
-  }), /frozen/)
-  assert.deepEqual(fixture.calls, ['east_west'])
+  fixture.entity.stagedStrategy = { type: 'unknown' }
+  await assert.rejects(placeMinecart(fixture.bot, fixture.entity, fixture), /Unsupported frozen minecart staging/)
+  assert.deepEqual(fixture.calls, [])
   assert.equal(Object.keys(fixture.bot.entities).length, 0)
 })
 
-test('frozen staging requires attestation and refuses a reused cart that would collide with the cap', async () => {
-  const fixture = stagedCartFixture()
-  await assert.rejects(placeMinecart(fixture.bot, fixture.entity, { executor: fixture.executor }), /attestation/)
-  assert.deepEqual(fixture.calls, [])
-  fixture.bot.entities[30] = { id: 30, name: fixture.entity.name, position: new Vec3(0.5, 0.5625, 0.5) }
-  await assert.rejects(placeMinecart(fixture.bot, fixture.entity, fixture), /cap clearance/)
-  assert.equal(fixture.calls.includes('spawn'), false)
-})
-
-test('frozen staging resumes a previously spawned low cart and restores a remaining flat rail', async () => {
+test('historical staged carts are rejected without restoring a remaining flat rail', async () => {
   const fixture = stagedCartFixture()
   const Block = require('prismarine-block')('1.21.4')
   await fixture.executor.adjustRail(fixture.entity.rail, Block.fromStateId(fixture.entity.stagedStrategy.flatState, 0))
   fixture.calls.length = 0
   fixture.bot.entities[30] = { id: 30, name: fixture.entity.name, position: fixture.entity.stagedStrategy.flatPos.clone() }
   const claimedIds = new Set()
-  const result = await placeMinecart(fixture.bot, fixture.entity, { ...fixture, claimedIds })
-  assert.equal(result.reused, true)
-  assert.equal(result.railRestored, true)
-  assert.deepEqual(fixture.calls, ['frozen', 'ascending_east'])
-  assert.equal(claimedIds.has(30), true)
+  await assert.rejects(placeMinecart(fixture.bot, fixture.entity, { ...fixture, claimedIds }), /Unsupported frozen minecart staging/)
+  assert.deepEqual(fixture.calls, [])
+  assert.equal(fixture.bot.blockAt(fixture.entity.railPos).getProperties().shape, 'east_west')
+  assert.equal(claimedIds.size, 0)
 })
 
-test('frozen staging never restores the rail after cancellation during the final attestation', async () => {
+test('cancellation precedes staged minecart rejection and performs no operation', async () => {
   const fixture = stagedCartFixture()
   const controller = new AbortController()
-  let checks = 0
+  controller.abort()
   await assert.rejects(placeMinecart(fixture.bot, fixture.entity, {
     executor: fixture.executor,
     signal: controller.signal,
-    assertFrozen: async () => {
-      if (++checks === 3) controller.abort()
-      return { frozen: true, quiescent: true }
-    }
+    assertFrozen: fixture.assertFrozen
   }), { name: 'AbortError' })
-  assert.deepEqual(fixture.calls, ['east_west', 'spawn'])
-  assert.equal(fixture.bot.blockAt(fixture.entity.railPos).getProperties().shape, 'east_west')
-  assert.ok(fixture.bot.entities[30])
+  assert.deepEqual(fixture.calls, [])
+  assert.equal(Object.keys(fixture.bot.entities).length, 0)
 })
 
 test('does not silently drop unknown entity types or container payloads', () => {
