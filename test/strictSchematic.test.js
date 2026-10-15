@@ -1,7 +1,39 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { decodeLitematic, decodeSponge, resolveState, matchesTarget, matchesPhysicalTarget, preparePhysicalPlan, inspectPlan, createBuildContext } = require('../lib/strictSchematic')
+const { decodeLitematic, decodeSponge, resolveState, matchesTarget, matchesPhysicalTarget, preparePhysicalPlan, inspectPlan, createBuildContext, itemNameForBlock, pottedPlantForBlock } = require('../lib/strictSchematic')
 const Block = require('prismarine-block')('1.21.4')
+
+test('wall heads and every registered potted plant retain active physical tasks and valid materials', () => {
+  for (const version of ['1.21.4', '1.21.11']) {
+    const data = require('minecraft-data')(version)
+    const names = Object.keys(data.blocksByName).filter(name => name.startsWith('potted_') || /_wall_(skull|head)$/.test(name))
+    const plan = decodeSponge({
+      Width: names.length,
+      Height: 1,
+      Length: 1,
+      Palette: Object.fromEntries(names.map((name, index) => [`minecraft:${name}`, index])),
+      BlockData: names.map((_, index) => index)
+    }, version, { x: 0, y: 64, z: 0 })
+    assert.deepEqual(inspectPlan(plan).issues, [])
+    assert.equal(preparePhysicalPlan(plan).tasks.length, names.length)
+    assert.equal(preparePhysicalPlan(plan).derived.length, 0)
+    const context = createBuildContext(plan, {})
+    for (const task of plan.tasks) {
+      assert.ok(context.items[task.state], task.name)
+      if (task.name.startsWith('potted_')) {
+        assert.equal(itemNameForBlock(task.name), 'flower_pot')
+        assert.ok(data.itemsByName[pottedPlantForBlock(task.name)], task.name)
+      } else {
+        assert.equal(itemNameForBlock(task.name), task.name.replace('_wall_', '_'))
+        assert.equal(context.getFacing(task.state, 'north').faceDirection, true, task.name)
+      }
+    }
+  }
+  assert.equal(pottedPlantForBlock('potted_azalea_bush'), 'azalea')
+  assert.equal(pottedPlantForBlock('potted_flowering_azalea_bush'), 'flowering_azalea')
+  assert.equal(pottedPlantForBlock('potted_bamboo'), 'bamboo')
+  assert.equal(pottedPlantForBlock('bamboo'), null)
+})
 
 test('integer state migration preserves the requested tree and distance', () => {
   const block = resolveState('oak_leaves', { distance: '7', persistent: 'true', waterlogged: 'false' }, '1.21.4')
@@ -9,6 +41,17 @@ test('integer state migration preserves the requested tree and distance', () => 
   assert.equal(String(block.getProperties().distance), '7')
   assert.throws(() => resolveState('oak_leaves', { distance: '9' }, '1.21.4'), /Invalid/)
   assert.throws(() => resolveState('stone', { missing: 'true' }, '1.21.4'), /Unknown property/)
+})
+
+test('head power is live while skull direction and standing rotation remain exact', () => {
+  const version = '1.21.11'
+  const wanted = resolveState('wither_skeleton_wall_skull', { facing: 'east', powered: false }, version)
+  assert.equal(matchesTarget(wanted, resolveState(wanted.name, { facing: 'east', powered: true }, version)), true)
+  assert.equal(matchesTarget(wanted, resolveState(wanted.name, { facing: 'west', powered: true }, version)), false)
+  assert.equal(matchesTarget(wanted, resolveState(wanted.name, { facing: 'east', powered: true }, version), { exact: true }), false)
+  const standing = resolveState('wither_skeleton_skull', { rotation: '3', powered: false }, version)
+  assert.equal(matchesTarget(standing, resolveState(standing.name, { rotation: '3', powered: true }, version)), true)
+  assert.equal(matchesTarget(standing, resolveState(standing.name, { rotation: '4', powered: false }, version)), false)
 })
 
 test('legacy chains map only when the target registry renamed them and preserve every state', () => {

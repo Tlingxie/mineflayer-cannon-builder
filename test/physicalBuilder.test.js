@@ -493,6 +493,157 @@ test('dirt paths and lava cauldrons are made by transforming a base block in pla
   }
 })
 
+function pottedFixture (name = 'potted_bamboo', { existing, acknowledge = true, plantedName = name } = {}) {
+  const f = fixture(name)
+  f.bot.entity.position = f.pos.offset(2.5, 1.3, 0.5)
+  f.bot.world.raycast = require('prismarine-world/src/worldsync').prototype.raycast
+  const support = f.pos.offset(0, -1, 0)
+  f.cells.set(support.toString(), f.block('stone', support))
+  if (existing) f.cells.set(f.pos.toString(), f.block(existing, f.pos))
+  f.executor.report = event => { if (event.state === 'placing') f.events.push(['audit', event]) }
+  f.ack = () => f.bot._client.emit('block_change', { location: f.pos, type: f.block(plantedName, f.pos).stateId })
+  f.bot._genericPlace = async (ref, face, options) => {
+    const pot = f.bot.heldItem.name === 'flower_pot'
+    f.events.push([pot ? 'pot' : 'plant', f.bot.heldItem.name, ref.position.clone(), face.clone()])
+    assert.equal(options.forceLook, 'ignore')
+    assert.equal(f.bot.controlState.sneak, false)
+    const actual = f.block(pot ? 'flower_pot' : plantedName, f.pos)
+    f.cells.set(f.pos.toString(), actual)
+    if (pot || acknowledge) f.bot._client.emit('block_change', { location: f.pos, type: actual.stateId })
+    if (!pot) f.bot.emit('test-plant')
+  }
+  return f
+}
+
+test('all 37 potted plants use an empty pot then an audited normal plant click in their active layer', async () => {
+  const names = Object.keys(registry.blocksByName).filter(name => name.startsWith('potted_'))
+  assert.equal(names.length, 37)
+  for (const name of names) {
+    const f = pottedFixture(name)
+    assert.equal(await f.executor.perform(f.task, { layer: 5 }), true, name)
+    const actions = f.events.filter(event => ['pot', 'plant'].includes(event[0]))
+    assert.deepEqual(actions.map(event => event[0]), ['pot', 'plant'], name)
+    assert.equal(actions[1][1], name.slice(7).replace('flowering_azalea_bush', 'flowering_azalea').replace('azalea_bush', 'azalea'))
+    assert.ok(actions[1][2].equals(f.pos))
+    const audits = f.events.filter(event => event[0] === 'audit').map(event => event[1])
+    assert.equal(audits.length, 2)
+    assert.ok(audits.every(event => event.pos.equals(f.pos) && event.useItem === false))
+    assert.ok(audits[1].referencePos.equals(f.pos))
+    assert.equal(f.executor.satisfied(f.task), true)
+    assert.equal(await f.executor.perform(f.task, { layer: 5 }), true)
+    assert.equal(f.events.filter(event => event[0] === 'plant').length, 1, 'a completed pot must never be clicked again')
+  }
+})
+
+test('existing empty pots are reused and completed pots do not receive clicks', async () => {
+  for (const existing of ['flower_pot', 'potted_bamboo']) {
+    const f = pottedFixture('potted_bamboo', { existing })
+    assert.equal(await f.executor.perform(f.task, { layer: 5 }), true)
+    assert.equal(f.events.filter(event => event[0] === 'pot').length, 0)
+    assert.equal(f.events.filter(event => event[0] === 'plant').length, existing === 'flower_pot' ? 1 : 0)
+    assert.equal(f.events.some(event => event[0] === 'dig'), false)
+  }
+})
+
+test('planting requires a fresh exact server update rather than optimistic cache or another plant', async () => {
+  const f = pottedFixture('potted_bamboo', { existing: 'flower_pot', acknowledge: false })
+  f.ack()
+  let complete = false
+  const sent = new Promise(resolve => f.bot.once('test-plant', resolve))
+  const work = f.executor.perform(f.task, { layer: 5 }).then(result => { complete = true; return result })
+  await Promise.race([sent, work])
+  assert.equal(f.events.filter(event => event[0] === 'plant').length, 1)
+  await new Promise(resolve => setTimeout(resolve, 60))
+  assert.equal(complete, false)
+  f.ack()
+  assert.equal(await work, true)
+
+  for (const plantedName of ['flower_pot', 'potted_poppy']) {
+    const wrong = pottedFixture('potted_bamboo', { existing: 'flower_pot', plantedName })
+    const controller = new AbortController()
+    wrong.bot.once('test-plant', () => controller.abort())
+    await assert.rejects(wrong.executor.perform(wrong.task, { layer: 5, signal: controller.signal }), { code: 'MUTATION_OUTCOME_UNKNOWN' })
+    assert.equal(wrong.executor.satisfied(wrong.task), false)
+    await assert.rejects(wrong.executor.perform(wrong.task, { layer: 5 }), { code: 'MUTATION_OUTCOME_UNKNOWN' })
+    assert.equal(wrong.events.filter(event => event[0] === 'plant').length, 1)
+  }
+})
+
+test('pot placement and filling each obey the layer audit before sending their packet', async () => {
+  for (const rejectFill of [false, true]) {
+    const f = pottedFixture()
+    f.executor.report = event => {
+      if (event.state === 'placing' && event.referencePos.equals(f.pos) === rejectFill) throw new Error('Pot layer audit rejected placement')
+    }
+    await assert.rejects(f.executor.perform(f.task, { layer: 5 }), /Pot layer audit rejected/)
+    assert.equal(f.events.filter(event => event[0] === 'pot').length, rejectFill ? 1 : 0)
+    assert.equal(f.events.filter(event => event[0] === 'plant').length, 0)
+  }
+  const f = pottedFixture()
+  await assert.rejects(f.executor.perform(f.task, { layer: 6 }), /outside the active layer/)
+  assert.deepEqual(f.events, [])
+})
+
+test('planting waits for the matching sequence acknowledgement after a correct raw block update', async () => {
+  const f = pottedFixture('potted_bamboo', { existing: 'flower_pot' })
+  let sequence = 0
+  f.bot._nextSequence = () => ++sequence
+  const place = f.bot._genericPlace
+  f.bot._genericPlace = async (...args) => {
+    f.bot._nextSequence()
+    await place(...args)
+  }
+  let complete = false
+  const sent = new Promise(resolve => f.bot.once('test-plant', resolve))
+  const work = f.executor.perform(f.task, { layer: 5 }).then(result => { complete = true; return result })
+  await sent
+  f.bot._client.emit('acknowledge_player_digging', { sequenceId: sequence - 1 })
+  await new Promise(resolve => setTimeout(resolve, 60))
+  assert.equal(complete, false)
+  f.bot._client.emit('acknowledge_player_digging', { sequenceId: sequence })
+  assert.equal(await work, true)
+  assert.equal(f.executor.mutations.confirmed.get('0,5,0').sequence, sequence)
+})
+
+test('cancellation between placing the pot and equipping the plant sends no filling click', async () => {
+  const f = pottedFixture()
+  const controller = new AbortController()
+  const equip = f.bot.creative.setInventorySlot
+  f.bot.creative.setInventorySlot = async (slot, item) => {
+    if (item?.name === 'bamboo') controller.abort()
+    else await equip(slot, item)
+  }
+  await assert.rejects(f.executor.perform(f.task, { layer: 5, signal: controller.signal }), { name: 'AbortError' })
+  assert.equal(f.events.filter(event => event[0] === 'pot').length, 1)
+  assert.equal(f.events.filter(event => event[0] === 'plant').length, 0)
+  assert.equal(f.bot.blockAt(f.pos).name, 'flower_pot')
+  assert.equal(f.executor.satisfied(f.task), false)
+  f.bot.creative.setInventorySlot = equip
+  assert.equal(await f.executor.perform(f.task, { layer: 5 }), true)
+  assert.equal(f.events.filter(event => event[0] === 'pot').length, 1)
+  assert.equal(f.events.filter(event => event[0] === 'plant').length, 1)
+})
+
+test('planting rechecks the empty pot and final aiming ray immediately before the click', async () => {
+  for (const mutation of ['after-aim', 'after-audit', 'ray']) {
+    const f = pottedFixture('potted_bamboo', { existing: 'flower_pot' })
+    const orient = f.executor.orient.bind(f.executor)
+    f.executor.orient = async (...args) => {
+      await orient(...args)
+      if (mutation === 'after-aim') f.cells.set(f.pos.toString(), f.block('potted_bamboo', f.pos))
+      if (mutation === 'ray') f.executor.selectionRaycast = () => null
+    }
+    if (mutation === 'after-audit') {
+      f.executor.report = event => {
+        if (event.state === 'placing') f.cells.set(f.pos.toString(), f.block('potted_bamboo', f.pos))
+      }
+    }
+    if (mutation === 'ray') await assert.rejects(f.executor.perform(f.task, { layer: 5 }), /Planting aiming ray/)
+    else assert.equal(await f.executor.perform(f.task, { layer: 5 }), true)
+    assert.equal(f.events.filter(event => event[0] === 'plant').length, 0)
+  }
+})
+
 test('rail placement uses the requested horizontal axis', () => {
   for (const [shape, allowed, rejected] of [
     ['east_west', new Vec3(-3, -1, 0), new Vec3(0, -1, 3)],
@@ -742,6 +893,46 @@ test('standing torches only click the floor even when a nearby wall is reachable
     assert.ok(f.executor.makeGoal(f.task).facesPos.every(([face]) => face.equals(new Vec3(0, -1, 0))))
     f.cells.delete(floor.toString())
     assert.equal(f.executor.makeGoal(f.task).facesPos.length, 0, 'a wall cannot substitute the required floor')
+  }
+})
+
+test('standing skulls and heads require floor clicks with or without block state components', () => {
+  const names = Object.keys(registry.blocksByName).filter(name => /_(skull|head)$/.test(name) && !name.includes('_wall_') && name !== 'piston_head')
+  for (const name of names) {
+    for (const components of [false, true]) {
+      const f = fixture(name)
+      f.executor.useStateComponents = components
+      const floor = f.pos.offset(0, -1, 0)
+      const wall = f.pos.offset(0, 0, -1)
+      f.cells.set(floor.toString(), f.block('stone', floor))
+      f.cells.set(wall.toString(), f.block('stone', wall))
+      assert.ok(f.executor.makeGoal(f.task).facesPos.length > 0, name)
+      assert.ok(f.executor.makeGoal(f.task).facesPos.every(([face]) => face.equals(new Vec3(0, -1, 0))), name)
+      f.cells.delete(floor.toString())
+      assert.equal(f.executor.makeGoal(f.task).facesPos.length, 0, `${name}: a wall cannot substitute for the floor`)
+    }
+  }
+})
+
+test('wall skulls and heads retain their exact attachment in all four directions for both component modes', () => {
+  const names = Object.keys(registry.blocksByName).filter(name => /_wall_(skull|head)$/.test(name))
+  const directions = { north: new Vec3(0, 0, 1), south: new Vec3(0, 0, -1), east: new Vec3(-1, 0, 0), west: new Vec3(1, 0, 0) }
+  for (const name of names) {
+    for (const [facing, expected] of Object.entries(directions)) {
+      for (const components of [false, true]) {
+        const f = fixture(name, { facing })
+        f.executor.useStateComponents = components
+        for (const offset of [new Vec3(0, -1, 0), ...Object.values(directions)]) {
+          const support = f.pos.plus(offset)
+          f.cells.set(support.toString(), f.block('stone', support))
+        }
+        const goal = f.executor.makeGoal(f.task)
+        assert.ok(goal.facesPos.length > 0, `${name}/${facing}`)
+        assert.ok(goal.facesPos.every(([face]) => face.equals(expected)), `${name}/${facing}/${components}`)
+        f.cells.delete(f.pos.plus(expected).toString())
+        assert.equal(f.executor.makeGoal(f.task).facesPos.length, 0, `${name}/${facing}: another support cannot substitute`)
+      }
+    }
   }
 })
 

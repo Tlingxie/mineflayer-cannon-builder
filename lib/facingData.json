@@ -349,6 +349,11 @@
     "faceDirection": true,
     "inverted": false
   },
+  "piglin_wall_head": {
+    "is3D": false,
+    "faceDirection": true,
+    "inverted": false
+  },
   "anvil": {
     "is3D": false,
     "faceDirection": false,
