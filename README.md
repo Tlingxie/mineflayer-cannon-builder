@@ -1,6 +1,6 @@
 # Mineflayer Cannon Builder
 
-基于 Mineflayer 的 Minecraft Java 版建造工具，支持最多 30 个 bot 在同一进程中协作，按全局 Y 层从下向上施工。bot 实际飞到目标附近，通过玩家放置、挖掘和容器交互完成任务。默认端点为 **Minecraft 1.21.11，127.0.0.1:25566**。
+基于 Mineflayer 的 Minecraft Java 版建造工具，支持最多 100 个 bot（默认 30）在同一进程中协作，按全局 Y 层从下向上施工。bot 实际飞到目标附近，通过玩家放置、挖掘和容器交互完成任务。默认端点为 **Minecraft 1.21.11，127.0.0.1:25566**。
 
 本仓库导出建造、恢复、审计工具和测试，**不包含主炮、下界加载器或控制面板蓝图**。`schematics/` 中保留的是原项目示例，不能替代这些蓝图。当前传送门物品循环装置的故障尚未解决；结构、容器和实体装配验收通过，不等于已经通过发射或整机运行验收。
 
@@ -23,7 +23,7 @@ npm test
 ## 网页施工控制台
 
 运行 `npm run web`，打开 **http://127.0.0.1:3210**。填写原点，拖入
-`.litematic` / `.schem` 蓝图，选择 1–30 个 bot 后即可开始施工。
+`.litematic` / `.schem` 蓝图，选择 1–100 个 bot 后即可开始施工。
 也可拖入 `.mid` / `.midi`，自动转换为带起点按钮的音符盒红石音乐轨道，
 下载生成的 `.schem` 或直接交给 bot 施工。支持多轨速度变化、音色映射和和弦，
 节拍量化为 0.1 秒；页面会显示音域调整、播放方式和占地。
@@ -60,7 +60,7 @@ npm run server:status
 
 新建服务器的默认配置已经修正为 `allow-nether=true`。旧世界若仍为 `false`，需保存、停止服务器，修改该世界实际使用的 `server.properties` 后重启；仅重新点燃门不会重新加载这项配置。允许进入下界不代表传送门物品循环装置已修好。
 
-## 30 bot 严格逐层施工
+## 多 bot 严格逐层施工
 
 先运行内置的三层、180 个目标测试；请选空地，并使用上一步查到的端口：
 
@@ -74,7 +74,7 @@ npm run multi-build:dev -- --version 1.21.4 --port 25565 --origin 0,-60,90
 # 仅解析和检查，不连接 bot
 npm run multi-build -- --schematic "/path/to/build.litematic" --inspect
 
-# 最多 30 个 bot；此例指定蓝图包围盒最小角
+# 最多 100 个 bot，默认 30；此例指定蓝图包围盒最小角
 npm run multi-build -- --version 1.21.4 --schematic "/path/to/build.litematic" --port 25565 --bots 30 --origin 0,-60,0
 
 # 对有源原点信息的 Litematic，也可以指定真正的蓝图原点
@@ -98,7 +98,7 @@ npm run multi-build -- --version 1.21.4 --schematic "/path/to/build.litematic" -
 | `--version` | `1.21.11`；旧受管服显式指定 `1.21.4` |
 | `--server-profile` | 已核验的外部本机 FIFO 控制台配置 |
 | `--prepare-workers` | 配合 profile，仅准备本次在线施工 bot 的创造模式与 OP |
-| `--bots` | `30`，范围 1–30 |
+| `--bots` | `30`，范围 1–100 |
 | `--prefix` | `builder`；更换后应确保对应账号的权限 |
 | `--bottom-layers N` | 只建最低 N 个蓝图层，报告明确为部分施工 |
 | `--max-attempts` | 每任务失败重试上限，默认 12 |

@@ -22,6 +22,7 @@ const state = {
 
 const formatNumber = value => Number.isFinite(value) ? numberFormat.format(value) : '—'
 const isActive = () => Boolean(state.job && activeStatuses.has(state.job.status))
+const maxBots = () => state.config?.maxBots || Number(element('bot-count').max)
 const setText = (id, text) => { element(id).textContent = text }
 
 function notice (id, message) {
@@ -56,7 +57,7 @@ function validateBuild () {
   const coordinates = origin()
   if (['x', 'y', 'z'].some(axis => element(`origin-${axis}`).value.trim() === '' || !Number.isSafeInteger(coordinates[axis]))) return '原点 X、Y、Z 需要填写整数。'
   const bots = Number(element('bot-count').value)
-  if (!Number.isInteger(bots) || bots < 1 || bots > 30) return '建造队人数需要在 1 到 30 之间。'
+  if (!Number.isInteger(bots) || bots < 1 || bots > maxBots()) return `建造队人数需要在 1 到 ${maxBots()} 之间。`
   const minimum = minimumOrigin()
   const dimensions = state.blueprint.dimensions
   if (dimensions && (minimum.y < -64 || minimum.y + dimensions.y > 320)) return '蓝图超出了主世界高度范围（Y = -64 至 319），请调整原点 Y。'
@@ -444,7 +445,7 @@ window.addEventListener('drop', event => { event.preventDefault() })
 element('bot-slider').addEventListener('input', event => { element('bot-count').value = event.target.value })
 element('bot-count').addEventListener('input', event => {
   const value = Number(event.target.value)
-  if (Number.isInteger(value) && value >= 1 && value <= 30) element('bot-slider').value = value
+  if (Number.isInteger(value) && value >= 1 && value <= maxBots()) element('bot-slider').value = value
 })
 for (const id of ['origin-x', 'origin-y', 'origin-z', 'origin-mode']) {
   element(id).addEventListener('input', () => {
@@ -464,6 +465,9 @@ async function initialize () {
   updateControls()
   try {
     state.config = await request('/api/config')
+    element('bot-count').max = maxBots()
+    element('bot-slider').max = maxBots()
+    setText('bot-limit-label', `${maxBots()} 个 · 最大并行`)
     const defaults = state.config.defaults || {}
     if (defaults.origin) {
       for (const axis of ['x', 'y', 'z']) element(`origin-${axis}`).value = defaults.origin[axis]

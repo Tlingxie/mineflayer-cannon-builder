@@ -3,6 +3,7 @@ const { appendFileSync } = require('node:fs')
 const path = require('node:path')
 const { parseArgs } = require('node:util')
 const { Vec3 } = require('vec3')
+const { DEFAULT_BOTS, MAX_BOTS } = require('../lib/buildLimits')
 const { LayerScheduler } = require('../lib/layerScheduler')
 const { planLayerSupports, createSupportCleanupTasks } = require('../lib/layerSupports')
 const { buildIdentity, loadRecovery } = require('../lib/buildRecovery')
@@ -24,7 +25,7 @@ function parseOptions (args = process.argv.slice(2)) {
       resume: { type: 'string' },
       host: { type: 'string', default: '127.0.0.1' },
       port: { type: 'string', default: '25566' },
-      bots: { type: 'string', default: '30' },
+      bots: { type: 'string', default: String(DEFAULT_BOTS) },
       version: { type: 'string', default: '1.21.11' },
       'server-profile': { type: 'string' },
       'prepare-workers': { type: 'boolean', default: false },
@@ -41,7 +42,7 @@ function parseOptions (args = process.argv.slice(2)) {
   const maxAttempts = Number(values['max-attempts'])
   const spawnDelay = Number(values['spawn-delay'])
   const bottomLayers = values['bottom-layers'] === undefined ? Infinity : Number(values['bottom-layers'])
-  if (!Number.isInteger(bots) || bots < 1 || bots > 30) throw new Error('--bots must be between 1 and 30')
+  if (!Number.isInteger(bots) || bots < 1 || bots > MAX_BOTS) throw new Error(`--bots must be between 1 and ${MAX_BOTS}`)
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid --port')
   if (!Number.isInteger(maxAttempts) || maxAttempts < 1) throw new Error('Invalid --max-attempts')
   if (!Number.isFinite(spawnDelay) || spawnDelay < 0) throw new Error('Invalid --spawn-delay')
@@ -127,15 +128,17 @@ async function stageWorkers (workers, plan, { signal, onEvent = () => {}, minimu
   signal?.addEventListener('abort', abort, { once: true })
   if (signal?.aborted) abort()
   const stageY = Math.max(plan.min.y, minimumLayer) + 4
-  const width = Math.max(6, plan.max.x - plan.min.x)
-  const depth = Math.max(5, plan.max.z - plan.min.z)
+  const columns = Math.max(1, Math.ceil(Math.sqrt(workers.length)))
+  const rows = Math.max(1, Math.ceil(workers.length / columns))
+  const width = Math.max(6, columns, plan.max.x - plan.min.x)
+  const depth = Math.max(5, rows, plan.max.z - plan.min.z)
   let firstError
   try {
     const results = await Promise.allSettled(workers.map(async (worker, index) => {
       try {
         checkSignal(controller.signal)
         await worker.bot.waitForChunksToLoad()
-        const target = new Vec3(plan.min.x + (index % 6 + 0.5) * width / 6, stageY, plan.min.z + (Math.floor(index / 6) + 0.5) * depth / 5)
+        const target = new Vec3(plan.min.x + (index % columns + 0.5) * width / columns, stageY, plan.min.z + (Math.floor(index / columns) + 0.5) * depth / rows)
         const travelY = Math.max(worker.position.y, stageY)
         const waypoints = [new Vec3(worker.position.x, travelY, worker.position.z), new Vec3(target.x, travelY, target.z), target]
         onEvent({ type: 'stage-start', workerId: worker.id, position: worker.position, target })

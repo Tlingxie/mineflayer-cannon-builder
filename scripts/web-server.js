@@ -3,6 +3,7 @@ const http = require('node:http')
 const fs = require('node:fs/promises')
 const path = require('node:path')
 const { randomBytes, timingSafeEqual } = require('node:crypto')
+const { DEFAULT_BOTS, MAX_BOTS } = require('../lib/buildLimits')
 
 const root = path.resolve(__dirname, '..')
 const MAX_UPLOAD_BYTES = 32 * 1024 * 1024
@@ -66,7 +67,7 @@ async function body (req, limit) {
 function createWebServer ({ manager, rootDir = root, maxUploadBytes = MAX_UPLOAD_BYTES } = {}) {
   if (!manager) throw new Error('A build manager is required')
   const token = randomBytes(32).toString('hex')
-  const defaults = { host: '127.0.0.1', port: 25566, version: '1.21.11', bots: 30, origin: { x: 128, y: 0, z: 128 } }
+  const defaults = { host: '127.0.0.1', port: 25566, version: '1.21.11', bots: DEFAULT_BOTS, origin: { x: 128, y: 0, z: 128 } }
   const server = http.createServer(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store')
     res.setHeader('X-Content-Type-Options', 'nosniff')
@@ -83,7 +84,7 @@ function createWebServer ({ manager, rootDir = root, maxUploadBytes = MAX_UPLOAD
         const received = req.headers['x-csrf-token']
         if (typeof received !== 'string' || !/^[a-f0-9]{64}$/.test(received) || !timingSafeEqual(Buffer.from(received), Buffer.from(token))) throw fail(403, '页面凭据已失效，请刷新页面')
       }
-      if (req.method === 'GET' && url.pathname === '/api/config') return json(res, 200, { csrfToken: token, defaults, maxUploadBytes })
+      if (req.method === 'GET' && url.pathname === '/api/config') return json(res, 200, { csrfToken: token, defaults, maxBots: MAX_BOTS, maxUploadBytes })
       if (req.method === 'GET' && url.pathname === '/api/status') return json(res, 200, await manager.snapshot())
       const download = /^\/api\/blueprints\/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\/download$/.exec(url.pathname)
       if (req.method === 'GET' && download) {

@@ -29,40 +29,42 @@ function scheduler (options = {}) {
   })
 }
 
-test('runs 30 workers concurrently with exclusive task and worker ownership', async () => {
-  const gate = deferred()
-  const started = deferred()
-  const activeWorkers = new Set()
-  const activeTasks = new Set()
-  const seen = new Set()
-  let peak = 0
-  const job = scheduler({
-    tasks: Array.from({ length: 60 }, (_, i) => task(i)),
-    workers: Array.from({ length: 30 }, (_, i) => worker(i)),
-    execute: async (bot, action) => {
-      assert.equal(activeWorkers.has(bot.id), false)
-      assert.equal(activeTasks.has(action.id), false)
-      activeWorkers.add(bot.id)
-      activeTasks.add(action.id)
-      peak = Math.max(peak, activeWorkers.size)
-      if (activeWorkers.size === 30) started.resolve()
-      await gate.promise
-      seen.add(action.id)
-      activeWorkers.delete(bot.id)
-      activeTasks.delete(action.id)
-      return true
-    }
+for (const workerCount of [30, 100]) {
+  test(`runs ${workerCount} workers concurrently with exclusive task and worker ownership`, { timeout: 5000 }, async () => {
+    const gate = deferred()
+    const started = deferred()
+    const activeWorkers = new Set()
+    const activeTasks = new Set()
+    const seen = new Set()
+    let peak = 0
+    const job = scheduler({
+      tasks: Array.from({ length: workerCount * 2 }, (_, i) => task(i)),
+      workers: Array.from({ length: workerCount }, (_, i) => worker(i)),
+      execute: async (bot, action) => {
+        assert.equal(activeWorkers.has(bot.id), false)
+        assert.equal(activeTasks.has(action.id), false)
+        activeWorkers.add(bot.id)
+        activeTasks.add(action.id)
+        peak = Math.max(peak, activeWorkers.size)
+        if (activeWorkers.size === workerCount) started.resolve()
+        await gate.promise
+        seen.add(action.id)
+        activeWorkers.delete(bot.id)
+        activeTasks.delete(action.id)
+        return true
+      }
+    })
+    const running = job.run()
+    await started.promise
+    assert.equal(peak, workerCount)
+    gate.resolve()
+    const result = await running
+    assert.equal(seen.size, workerCount * 2)
+    assert.equal(result.completed, workerCount * 2)
+    assert.equal(result.layersCompleted, 1)
+    assert.equal(result.attempts, workerCount * 2)
   })
-  const running = job.run()
-  await started.promise
-  assert.equal(peak, 30)
-  gate.resolve()
-  const result = await running
-  assert.equal(seen.size, 60)
-  assert.equal(result.completed, 60)
-  assert.equal(result.layersCompleted, 1)
-  assert.equal(result.attempts, 60)
-})
+}
 
 test('support dependency chains longer than the failure budget complete without consuming it', async () => {
   const complete = new Set()
@@ -147,47 +149,51 @@ test('a deferred dependency does not exempt ordinary failures from their attempt
   assert.equal(failed, 2)
 })
 
-test('waits for the slow worker and full verification before starting the next layer', async () => {
-  const slow = deferred()
-  const verifying = deferred()
-  const verified = deferred()
-  const events = []
-  const starts = []
-  let inFlight = 0
-  const job = scheduler({
-    tasks: [task(2, 2), task(0, -1), task(1, -1)],
-    workers: [worker(0), worker(1)],
-    onEvent: event => events.push(event),
-    execute: async (bot, action) => {
-      starts.push(action.pos.y)
-      inFlight++
-      if (action.id === 1) await slow.promise
-      inFlight--
-      return true
-    },
-    verifyLayer: async y => {
-      assert.equal(inFlight, 0)
-      if (y === -1) {
-        verifying.resolve()
-        await verified.promise
+for (const workerCount of [2, 100]) {
+  test(`${workerCount} workers wait for the slow worker and full verification before starting the next layer`, { timeout: 5000 }, async () => {
+    const slow = deferred()
+    const verifying = deferred()
+    const verified = deferred()
+    const events = []
+    const starts = []
+    let inFlight = 0
+    const job = scheduler({
+      tasks: [task(workerCount, 2), ...Array.from({ length: workerCount }, (_, i) => task(i, -1))],
+      workers: Array.from({ length: workerCount }, (_, i) => worker(i)),
+      onEvent: event => events.push(event),
+      execute: async (bot, action) => {
+        starts.push(action.pos.y)
+        inFlight++
+        if (action.id === workerCount - 1) await slow.promise
+        inFlight--
+        return true
+      },
+      verifyLayer: async (y, tasks) => {
+        assert.equal(inFlight, 0)
+        if (y === -1) {
+          assert.equal(tasks.length, workerCount)
+          assert.equal(starts.length, workerCount)
+          verifying.resolve()
+          await verified.promise
+        }
+        return []
       }
-      return []
-    }
+    })
+    const running = job.run()
+    await nextTurn()
+    assert.deepEqual(starts, Array(workerCount).fill(-1))
+    assert.equal(events.some(event => event.type === 'layer-complete'), false)
+    slow.resolve()
+    await verifying.promise
+    assert.deepEqual(starts, Array(workerCount).fill(-1))
+    verified.resolve()
+    await running
+    assert.deepEqual(starts, [...Array(workerCount).fill(-1), 2])
+    const firstComplete = events.findIndex(event => event.type === 'layer-complete' && event.layer === -1)
+    const nextStart = events.findIndex(event => event.type === 'layer-start' && event.layer === 2)
+    assert.ok(firstComplete >= 0 && firstComplete < nextStart)
   })
-  const running = job.run()
-  await nextTurn()
-  assert.deepEqual(starts, [-1, -1])
-  assert.equal(events.some(event => event.type === 'layer-complete'), false)
-  slow.resolve()
-  await verifying.promise
-  assert.deepEqual(starts, [-1, -1])
-  verified.resolve()
-  await running
-  assert.deepEqual(starts, [-1, -1, 2])
-  const firstComplete = events.findIndex(event => event.type === 'layer-complete' && event.layer === -1)
-  const nextStart = events.findIndex(event => event.type === 'layer-start' && event.layer === 2)
-  assert.ok(firstComplete >= 0 && firstComplete < nextStart)
-})
+}
 
 test('defers failed tasks behind untouched tasks and retries only within the current layer', async () => {
   const order = []

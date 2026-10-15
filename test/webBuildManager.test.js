@@ -95,13 +95,24 @@ test('failed MIDI conversion removes source data and never registers a download'
 
 test('validates bot count, translated height and every aligned schematic axis before launching', async t => {
   const { manager, start, spawned } = await fixture(t, { inspect: async () => ({ ...metadata, requiresAlignment: true }) })
-  await assert.rejects(start({ bots: 31 }), /1.*30/)
+  for (const bots of [0, 101, 30.5]) await assert.rejects(start({ bots }), /1.*100/)
   await assert.rejects(start({ origin: { x: 128, y: -64, z: 128 } }), /height/i)
   await assert.rejects(start({ origin: { x: 128, y: 65, z: 128 } }), /16/)
   await assert.rejects(start({ origin: { x: 128, y: 64, z: 128 }, originMode: 'minimum' }), /16/)
   await assert.rejects(start({ blueprintId: 'missing' }), /blueprint/i)
   assert.equal((await manager.snapshot()).job, null)
   assert.equal(spawned.length, 0)
+})
+
+test('launches 100 physical workers without truncating the requested count', async t => {
+  const { manager, start, spawned } = await fixture(t)
+  const job = await start({ bots: 100 })
+  assert.equal(job.bots, 100)
+  await until(() => spawned.length === 1)
+  const args = spawned[0].args
+  assert.equal(args[args.indexOf('--bots') + 1], '100')
+  assert.ok(args.includes('--prepare-workers'))
+  assert.equal((await manager.snapshot()).job.bots, 100)
 })
 
 test('reserves one job during attachment and starts the fixed CLI with physical worker options', async t => {

@@ -535,6 +535,41 @@ test('flight advances 0.9 blocks per tick and clamps the remaining partial step'
   assert.ok(positions.every(position => position.x <= target.x))
 })
 
+test('staging flight tolerates event-loop delays while still moving in physical steps', async t => {
+  const f = fixture()
+  let now = Date.now()
+  t.mock.method(Date, 'now', () => now)
+  const start = f.bot.entity.position.clone()
+  const target = start.offset(1.8, 0, 0)
+  const positions = []
+  const set = f.bot.entity.position.set.bind(f.bot.entity.position)
+  f.bot.entity.position.set = (x, y, z) => {
+    now += 2500
+    positions.push(new Vec3(x, y, z))
+    return set(x, y, z)
+  }
+  await f.executor.move(target)
+  assert.equal(positions.length, 2)
+  assert.ok(positions[0].distanceTo(start) <= 0.901)
+  assert.ok(f.bot.entity.position.distanceTo(target) < 0.001)
+})
+
+test('delayed flight still respects the placement deadline and a bounded staging timeout', async t => {
+  for (const placement of [false, true]) {
+    const f = fixture()
+    let now = Date.now()
+    const clock = t.mock.method(Date, 'now', () => now)
+    if (placement) f.executor.deadline = now + 1000
+    const target = f.bot.entity.position.offset(1.8, 0, 0)
+    const set = f.bot.entity.position.set.bind(f.bot.entity.position)
+    f.bot.entity.position.set = (x, y, z) => { now += placement ? 2500 : 31000; return set(x, y, z) }
+    await assert.rejects(f.executor.move(target), /Flight deadline exceeded/)
+    assert.ok(f.bot.entity.position.distanceTo(target) > 0.5)
+    assert.ok(f.bot.entity.velocity.equals(new Vec3(0, 0, 0)))
+    clock.mock.restore()
+  }
+})
+
 test('a thin diagonal obstruction between start midpoint and endpoint prevents a fast step', async () => {
   const f = fixture()
   const start = new Vec3(0.5, 5.1, 0.5)

@@ -33,6 +33,30 @@ test('only long music uses a workspace and 30 homes cover the narrow 2750 block 
   }
 })
 
+test('100 workers own every module and cover both edges of a 5002 block music track', async () => {
+  const { plan, workers, air } = fixture(100, 5002)
+  const workerIds = new Set(workers.map(worker => worker.id))
+  const owners = new Set()
+  const workspace = createMusicWorkspace(plan, workers)
+  await workspace.parkForRead()
+  assert.equal(workspace.homes.size, 100)
+  assert.equal(new Set(workers.map(worker => worker.position.x)).size, 100)
+  for (let x = plan.min.x; x < plan.max.x; x++) {
+    const near = { pos: new Vec3(x, plan.min.y, plan.min.z) }
+    const far = { pos: new Vec3(x, plan.max.y - 1, plan.max.z - 1) }
+    const owner = workspace.ownerForTask(near)
+    assert.ok(workerIds.has(owner))
+    assert.equal(workspace.ownerForTask(far), owner)
+    assert.equal(workspace.readBlock(near.pos), air)
+    assert.equal(workspace.readBlock(far.pos), air)
+    owners.add(owner)
+    if (x >= 2 && (x - 2) % 4 !== 0) {
+      assert.equal(owner, workspace.ownerForTask({ pos: near.pos.offset(-((x - 2) % 4), 0, 0) }))
+    }
+  }
+  assert.deepEqual(owners, workerIds)
+})
+
 test('insufficient worker coverage is rejected instead of validating unloaded portions', () => {
   const { plan, workers } = fixture(1)
   assert.throws(() => createMusicWorkspace(plan, workers), /more bots|更多.*bot|覆盖/i)
@@ -67,16 +91,18 @@ test('read barrier returns every owner home and rejects real missing columns', a
   await assert.rejects(workspace.parkForRead(), /chunk.*load|区块/i)
 })
 
-test('read coverage requires blueprint columns while unloaded columns outside its bounds do not block', async () => {
-  const { plan, workers, air } = fixture(2, 130)
-  for (const worker of workers) worker.bot.world.getColumn = (x, z) => x >= 0 && x <= 8 && z >= 216 && z <= 217 ? {} : null
-  const workspace = createMusicWorkspace(plan, workers, { loadTimeoutMs: 0 })
-  await workspace.parkForRead()
-  assert.equal(workspace.readBlock(new Vec3(129, 64, 3484)), air)
-  assert.equal(workspace.readBlock(new Vec3(144, 64, 3440)), null)
-  for (const worker of workers) worker.bot.world.getColumn = (x, z) => x >= 0 && x <= 7 && z >= 216 && z <= 217 ? {} : null
-  await assert.rejects(workspace.parkForRead(), /chunk not loaded at 8,216/)
-})
+for (const workerCount of [2, 100]) {
+  test(`${workerCount} workers require blueprint columns while unloaded columns outside its bounds do not block`, async () => {
+    const { plan, workers, air } = fixture(workerCount, 130)
+    for (const worker of workers) worker.bot.world.getColumn = (x, z) => x >= 0 && x <= 8 && z >= 216 && z <= 217 ? {} : null
+    const workspace = createMusicWorkspace(plan, workers, { loadTimeoutMs: 0 })
+    await workspace.parkForRead()
+    assert.equal(workspace.readBlock(new Vec3(129, 64, 3484)), air)
+    assert.equal(workspace.readBlock(new Vec3(144, 64, 3440)), null)
+    for (const worker of workers) worker.bot.world.getColumn = (x, z) => x >= 0 && x <= 7 && z >= 216 && z <= 217 ? {} : null
+    await assert.rejects(workspace.parkForRead(), /chunk not loaded at 8,216/)
+  })
+}
 
 test('every home is a block center so arrival tolerance cannot cross a chunk boundary', () => {
   const { plan, workers } = fixture()

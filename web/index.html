@@ -55,9 +55,9 @@
               </section>
 
               <section class="form-step bot-step">
-                <div class="step-heading"><span class="step-number">03</span><h3>安排建造队</h3><label class="bot-number-label"><input id="bot-count" type="number" min="1" max="30" step="1" value="30" aria-label="Bot 人数"><span>个 bot</span></label></div>
-                <label class="visually-hidden" for="bot-slider">选择 Bot 人数</label><input id="bot-slider" class="bot-slider" type="range" min="1" max="30" value="30">
-                <div class="range-labels"><span>1 个</span><span>30 个 · 最大并行</span></div>
+                <div class="step-heading"><span class="step-number">03</span><h3>安排建造队</h3><label class="bot-number-label"><input id="bot-count" type="number" min="1" max="100" step="1" value="30" aria-label="Bot 人数"><span>个 bot</span></label></div>
+                <label class="visually-hidden" for="bot-slider">选择 Bot 人数</label><input id="bot-slider" class="bot-slider" type="range" min="1" max="100" value="30">
+                <div class="range-labels"><span>1 个</span><span id="bot-limit-label">100 个 · 最大并行</span></div>
                 <p class="field-help">建造队共享同一层任务，完成后一起向上。</p>
               </section>
             </fieldset>

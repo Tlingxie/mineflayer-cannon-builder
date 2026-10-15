@@ -6,6 +6,7 @@ const net = require('node:net')
 const os = require('node:os')
 const crypto = require('node:crypto')
 const { spawn, spawnSync } = require('node:child_process')
+const { MAX_BOTS } = require('../lib/buildLimits')
 
 const VERSION = '1.21.4'
 const HOST = '127.0.0.1'
@@ -250,7 +251,7 @@ async function startServer (args) {
     'server-port': port,
     'online-mode': false,
     'enforce-secure-profile': false,
-    'max-players': 40,
+    'max-players': 128,
     gamemode: 'creative',
     'force-gamemode': true,
     difficulty: 'peaceful',
@@ -285,7 +286,7 @@ async function startServer (args) {
   await fsp.writeFile(eula, '# Accepted explicitly by the local server launcher. https://aka.ms/MinecraftEULA\neula=true\n')
   await fsp.writeFile(path.join(RUNTIME, 'server.properties'), Object.entries(properties).map(([key, value]) => `${key}=${value}`).join('\n') + '\n', { mode: 0o600 })
   const ops = await readJson(path.join(RUNTIME, 'ops.json')) || []
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < MAX_BOTS; i++) {
     const name = `builder${String(i).padStart(2, '0')}`
     if (!ops.some(op => op.name === name)) ops.push({ uuid: offlineUuid(name), name, level: 4, bypassesPlayerLimit: true })
   }

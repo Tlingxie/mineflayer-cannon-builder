@@ -31,13 +31,14 @@ test('configuration, same-origin mutations and read-only status use the manager 
   const f = await fixture(t)
   assert.equal(f.config.defaults.port, 25566)
   assert.equal(f.config.defaults.bots, 30)
+  assert.equal(f.config.maxBots, 100)
   assert.equal(f.config.maxUploadBytes, 16)
   assert.ok(f.config.csrfToken.length >= 32)
   assert.equal((await (await fetch(f.url + '/api/status')).json()).job, null)
   const upload = await fetch(f.url + '/api/blueprints?name=test.schem', { method: 'POST', headers: { ...f.headers, 'Content-Type': 'application/octet-stream', Origin: f.url }, body: 'sample' })
   assert.equal(upload.status, 201)
   assert.deepEqual(await upload.json(), { id: 'blueprint', filename: 'test.schem' })
-  const value = { blueprintId: 'blueprint', origin: { x: 128, y: 0, z: 128 }, originMode: 'schematic', bots: 30 }
+  const value = { blueprintId: 'blueprint', origin: { x: 128, y: 0, z: 128 }, originMode: 'schematic', bots: 100 }
   assert.equal((await fetch(f.url + '/api/builds', { method: 'POST', headers: f.headers, body: JSON.stringify(value) })).status, 202)
   assert.equal((await fetch(f.url + '/api/builds/job/stop', { method: 'POST', headers: f.headers, body: '{}' })).status, 202)
   assert.deepEqual(f.calls, [['upload', 'test.schem', 'sample'], ['start', value], ['stop', 'job']])

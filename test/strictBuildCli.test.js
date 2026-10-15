@@ -9,10 +9,16 @@ const { approachGoal } = require('../lib/physicalApproach')
 
 test('CLI rejects invalid worker counts and ambiguous missing targets', () => {
   assert.throws(() => parseOptions(['--bots', '0', '--fixture']), /bots/)
-  assert.throws(() => parseOptions(['--bots', '31', '--fixture']), /bots/)
+  assert.throws(() => parseOptions(['--bots', '101', '--fixture']), /bots/)
+  assert.throws(() => parseOptions(['--bots', '1.5', '--fixture']), /bots/)
   assert.throws(() => parseOptions([]), /schematic/)
   assert.equal(parseOptions(['--fixture']).bots, 30)
   assert.throws(() => parseOptions(['--fixture', '--origin', '0,1.5,0']), /origin/)
+})
+
+test('CLI accepts 100 workers while keeping a 30-worker default', () => {
+  assert.equal(parseOptions(['--bots', '100', '--fixture']).bots, 100)
+  assert.equal(parseOptions(['--fixture']).bots, 30)
 })
 
 test('schematic origin is explicit, integer and mutually exclusive with the bounding-box origin', () => {
@@ -198,6 +204,29 @@ test('stage distributes 30 workers in a 6 by 5 grid with loaded steps no longer 
   assert.ok(workers.every(worker => expectedZ.some(z => Math.abs(z - worker.position.z) <= 0.15)))
   assert.ok(workers.every(worker => worker.position.y === 68))
   assert.ok(loads >= moves.length)
+})
+
+test('stage keeps 100 workers inside a unique 10 by 10 grid with bounded movement', async () => {
+  const targets = new Map()
+  const workers = Array.from({ length: 100 }, (_, i) => {
+    const worker = { id: `bot${i}`, position: new Vec3(-10, 64, -10), bot: { waitForChunksToLoad: async () => {} } }
+    worker.executor = {
+      move: async destination => {
+        assert.ok(worker.position.distanceTo(destination) <= 8.001)
+        worker.position = destination.clone()
+      }
+    }
+    return worker
+  })
+  const plan = blueprint([[0, 64, 0, 'stone']])
+  await stageWorkers(workers, plan, { onEvent: event => { if (event.type === 'stage-start') targets.set(event.workerId, event.target) } })
+  assert.equal(new Set(workers.map(worker => key(worker.position))).size, 100)
+  assert.equal(new Set([...targets.values()].map(pos => pos.x)).size, 10)
+  assert.equal(new Set([...targets.values()].map(pos => pos.z)).size, 10)
+  assert.ok(workers.every(worker => worker.position.distanceTo(targets.get(worker.id)) <= 0.15))
+  assert.ok(workers.every(worker => worker.position.x > plan.min.x && worker.position.x < plan.min.x + 10))
+  assert.ok(workers.every(worker => worker.position.z > plan.min.z && worker.position.z < plan.min.z + 10))
+  assert.ok(workers.every(worker => worker.position.y === 68))
 })
 
 test('staging cancellation stops further movement and drains the active moves', async () => {
