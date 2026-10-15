@@ -62,6 +62,28 @@ test('insufficient worker coverage is rejected instead of validating unloaded po
   assert.throws(() => createMusicWorkspace(plan, workers), /more bots|更多.*bot|覆盖/i)
 })
 
+test('blocked music homes identify the origin and destination before descending into terrain', async () => {
+  const { plan, workers, moves } = fixture(2, 130)
+  plan.min.y = 0
+  plan.max.y = 5
+  const events = []
+  for (const worker of workers) worker.executor.pathing = { collisionOverlaps: feet => feet.y < 64 ? new Map([['stone', [1, 1, 1]]]) : new Map() }
+  const workspace = createMusicWorkspace(plan, workers, { onEvent: event => events.push(event) })
+  await assert.rejects(workspace.parkForRead(), error => error.code === 'TARGET_BLOCKED' && /Y=8/.test(error.message) && /Y=0/.test(error.message) && /地表|空地/.test(error.message))
+  assert.ok(moves.every(move => move.destination.y >= 64))
+  assert.ok(events.some(event => event.type === 'music-travel-blocked' && event.code === 'TARGET_BLOCKED'))
+})
+
+test('cleared underground music homes remain valid without a hardcoded surface height', async () => {
+  const { plan, workers } = fixture(2, 130)
+  plan.min.y = 0
+  plan.max.y = 5
+  for (const worker of workers) worker.executor.pathing = { collisionOverlaps: () => new Map() }
+  const workspace = createMusicWorkspace(plan, workers)
+  await workspace.parkForRead()
+  assert.ok(workers.every(worker => worker.position.y === 8))
+})
+
 test('workspace reads only currently loaded nearby columns and never treats a missing chunk as air', async () => {
   const { plan, workers, air } = fixture(2, 130)
   const workspace = createMusicWorkspace(plan, workers)

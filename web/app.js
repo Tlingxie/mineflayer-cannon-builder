@@ -127,7 +127,7 @@ function showBlueprint () {
   const schematicOption = element('origin-mode').querySelector('option[value="schematic"]')
   schematicOption.disabled = Boolean(blueprint && !blueprint.sourceMin)
   if (schematicOption.disabled) element('origin-mode').value = 'minimum'
-  setText('origin-help', music ? '音乐轨道从所选原点延伸，起点按钮的实际坐标显示在预览下方。' : blueprint && !blueprint.sourceMin ? '这份蓝图不含原点偏移，以上坐标作为包围盒最小角。' : 'Mk6 轨道炮的蓝图原点 X、Y、Z 都需要能被 16 整除。')
+  setText('origin-help', music ? '请选择已清空且 bot 可飞入的工地；地面 Y=63 时从 Y=64 起建。起点按钮坐标显示在预览下方。' : blueprint && !blueprint.sourceMin ? '这份蓝图不含原点偏移，以上坐标作为包围盒最小角。' : 'Mk6 轨道炮的蓝图原点 X、Y、Z 都需要能被 16 整除。')
   updateHeight()
   drawPreview()
 }

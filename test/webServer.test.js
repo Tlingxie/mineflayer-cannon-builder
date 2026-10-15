@@ -31,6 +31,7 @@ test('configuration, same-origin mutations and read-only status use the manager 
   const f = await fixture(t)
   assert.equal(f.config.defaults.port, 25566)
   assert.equal(f.config.defaults.bots, 30)
+  assert.equal(f.config.defaults.origin.y, 64)
   assert.equal(f.config.maxBots, 100)
   assert.equal(f.config.maxUploadBytes, 16)
   assert.ok(f.config.csrfToken.length >= 32)

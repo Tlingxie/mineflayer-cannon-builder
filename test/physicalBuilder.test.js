@@ -376,6 +376,76 @@ test('obstructed direct flight tries a clear overhead corridor before A star', (
   assert.ok(path[2].equals(target))
 })
 
+test('flight reports a blocked destination before searching for a route', () => {
+  const f = fixture()
+  const target = f.bot.entity.position.offset(6, 0, 0)
+  const obstacle = target.floored()
+  f.cells.set(obstacle.toString(), f.block('stone', obstacle))
+  f.executor.pathing.canTraverseFlightStep = () => { throw new Error('A star should not run for a blocked destination') }
+  assert.equal(f.executor.pathing.findFlightPath(f.bot.entity.position, target), null)
+  assert.equal(f.executor.pathing.lastSearchFailure, 'TARGET_BLOCKED')
+})
+
+test('flight distinguishes unloaded destination blocks from solid obstacles', () => {
+  const f = fixture()
+  const target = f.bot.entity.position.offset(6, 0, 0)
+  const blockAt = f.bot.blockAt
+  f.bot.blockAt = pos => pos.equals(target.floored()) ? null : blockAt(pos)
+  f.executor.pathing.canTraverseFlightStep = () => { throw new Error('A star should not run for an unloaded destination') }
+  assert.equal(f.executor.pathing.findFlightPath(f.bot.entity.position, target), null)
+  assert.equal(f.executor.pathing.lastSearchFailure, 'TARGET_UNLOADED')
+})
+
+test('flight distinguishes the search time budget from an exhausted route search', t => {
+  const f = fixture()
+  const start = f.bot.entity.position
+  const target = start.offset(6, 0, 0)
+  let now = 100
+  t.mock.method(Date, 'now', () => { const value = now; now += 36; return value })
+  assert.equal(f.executor.pathing.findFlightPath(start, target), null)
+  assert.equal(f.executor.pathing.lastSearchFailure, 'SEARCH_BUDGET')
+  t.mock.restoreAll()
+  f.executor.pathing.segmentClear = () => false
+  f.executor.pathing.canTraverseFlightStep = () => false
+  assert.equal(f.executor.pathing.findFlightPath(start, target), null)
+  assert.equal(f.executor.pathing.lastSearchFailure, 'NO_ROUTE')
+  f.executor.pathing.segmentClear = () => true
+  assert.deepEqual(f.executor.pathing.findFlightPath(start, target), [target])
+  assert.equal(f.executor.pathing.lastSearchFailure, null)
+})
+
+test('a direct escape may reduce an existing overlap before its destination is fully clear', () => {
+  const f = fixture()
+  f.cells.set(f.pos.toString(), f.block('dirt', f.pos))
+  const start = f.pos.offset(0.5, 0.1, 0.5)
+  const target = start.offset(0, 0.3, 0)
+  assert.equal(f.executor.pathing.positionClear(target), false)
+  assert.deepEqual(f.executor.pathing.findFlightPath(start, target), [target])
+  assert.equal(f.executor.pathing.lastSearchFailure, null)
+})
+
+test('failed flight includes its cause and worker coordinates without moving the player', async () => {
+  for (const code of ['TARGET_BLOCKED', 'TARGET_UNLOADED', 'SEARCH_BUDGET', 'NO_ROUTE']) {
+    const f = fixture()
+    f.bot.username = 'Builder07'
+    const start = f.bot.entity.position.clone()
+    const target = start.offset(6, 0, 0)
+    f.executor.pathing.findFlightPath = () => null
+    f.executor.pathing.lastSearchFailure = code
+    await assert.rejects(f.executor.move(target), error => {
+      assert.equal(error.code, code)
+      assert.match(error.message, /^No collision-free flight route/)
+      assert.ok(error.message.includes(f.bot.username))
+      assert.ok(error.message.includes(start.toString()))
+      assert.ok(error.message.includes(target.toString()))
+      return true
+    })
+    assert.ok(f.bot.entity.position.equals(start))
+    assert.ok(f.bot.entity.velocity.equals(new Vec3(0, 0, 0)))
+    assert.deepEqual(f.events, [])
+  }
+})
+
 test('placement approach prefers clear staging above the current layer', async () => {
   const f = fixture()
   const oldEye = f.executor.eye()

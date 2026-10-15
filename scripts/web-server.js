@@ -67,7 +67,7 @@ async function body (req, limit) {
 function createWebServer ({ manager, rootDir = root, maxUploadBytes = MAX_UPLOAD_BYTES } = {}) {
   if (!manager) throw new Error('A build manager is required')
   const token = randomBytes(32).toString('hex')
-  const defaults = { host: '127.0.0.1', port: 25566, version: '1.21.11', bots: DEFAULT_BOTS, origin: { x: 128, y: 0, z: 128 } }
+  const defaults = { host: '127.0.0.1', port: 25566, version: '1.21.11', bots: DEFAULT_BOTS, origin: { x: 128, y: 64, z: 128 } }
   const server = http.createServer(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store')
     res.setHeader('X-Content-Type-Options', 'nosniff')
