@@ -106,6 +106,87 @@ test('creative banner inventory distinguishes ordered pattern components', async
   assert.equal(f.bot.heldItem.components.some(component => component.type === 'banner_patterns'), false)
 })
 
+test('standing banners and signs only use floor clicks to select their standing block variant', () => {
+  for (const name of ['light_gray_banner', 'oak_sign']) {
+    const f = fixture(name, { rotation: 13 })
+    f.executor.useStateComponents = true
+    for (const delta of [new Vec3(0, -1, 0), new Vec3(1, 0, 0), new Vec3(0, 0, 1)]) {
+      const pos = f.pos.plus(delta)
+      f.cells.set(pos.toString(), f.block('stone', pos))
+    }
+    const goal = f.executor.makeGoal(f.task)
+    assert.ok(goal.facesPos.length)
+    assert.ok(goal.facesPos.every(([, , ref]) => ref.equals(f.pos.offset(0, -1, 0))), name)
+  }
+})
+
+test('banner selection outlines permit ordinary correction of incorrectly wall-placed banners', () => {
+  const f = fixture('light_gray_banner', { rotation: 13 })
+  const wrong = f.block('light_gray_wall_banner', f.pos, { facing: 'north' })
+  assert.deepEqual(f.executor.selectionShapes(wrong), [[0, 0, 14 / 16, 1, 12.5 / 16, 1]])
+  assert.deepEqual(f.executor.selectionShapes(f.wanted), [[4 / 16, 0, 4 / 16, 12 / 16, 1, 12 / 16]])
+})
+
+test('state-controlled bottom slabs can use the lower floor instead of requiring a side neighbour', () => {
+  const f = fixture('smooth_quartz_slab', { type: 'bottom', waterlogged: false })
+  f.executor.useStateComponents = true
+  const below = f.pos.offset(0, -1, 0)
+  f.cells.set(below.toString(), f.block('stone', below))
+  const goal = f.executor.makeGoal(f.task)
+  assert.ok(goal.facesPos.some(([, , ref]) => ref.equals(below)))
+})
+
+test('same-layer matching slabs use the occupied side half without merging the reference', () => {
+  const f = fixture('birch_slab', { type: 'bottom', waterlogged: false })
+  f.executor.useStateComponents = true
+  const side = f.pos.offset(-1, 0, 0)
+  f.cells.set(side.toString(), f.block('birch_slab', side, { type: 'bottom', waterlogged: false }))
+  const faces = f.executor.makeGoal(f.task).facesPos.filter(([, , ref]) => ref.equals(side))
+  assert.ok(faces.length)
+  assert.ok(faces.every(([, point]) => point.y < f.pos.y + 0.5))
+  assert.equal(f.executor.safeReference(f.bot.blockAt(side), f.wanted), false)
+})
+
+test('state-controlled end rods can be placed on the floor independently of their final orientation', () => {
+  const f = fixture('end_rod', { facing: 'west' })
+  f.executor.useStateComponents = true
+  const below = f.pos.offset(0, -1, 0)
+  f.cells.set(below.toString(), f.block('stone', below))
+  assert.ok(f.executor.makeGoal(f.task).facesPos.some(([, , ref]) => ref.equals(below)))
+})
+
+test('state-controlled ceiling levers may start from a supported floor without placing a future ceiling', () => {
+  const f = fixture('lever', { face: 'ceiling', facing: 'north', powered: false })
+  f.executor.useStateComponents = true
+  const below = f.pos.offset(0, -1, 0)
+  f.cells.set(below.toString(), f.block('stone', below))
+  assert.ok(f.executor.makeGoal(f.task).facesPos.some(([, , ref]) => ref.equals(below)))
+})
+
+test('pressure plates and signs expose their vanilla selectable outline despite empty collision', () => {
+  const f = fixture()
+  assert.deepEqual(f.executor.selectionShapes(f.block('heavy_weighted_pressure_plate', f.pos, { power: 1 })), [[1 / 16, 0, 1 / 16, 15 / 16, 0.5 / 16, 15 / 16]])
+  assert.deepEqual(f.executor.selectionShapes(f.block('stone_pressure_plate', f.pos, { powered: false })), [[1 / 16, 0, 1 / 16, 15 / 16, 1 / 16, 15 / 16]])
+  assert.deepEqual(f.executor.selectionShapes(f.block('cherry_wall_sign', f.pos, { facing: 'north', waterlogged: false })), [[0, 4.5 / 16, 14 / 16, 1, 12.5 / 16, 1]])
+})
+
+test('placing against a planted pot sneaks so it cannot remove a plant from a completed lower layer', async () => {
+  const f = fixture('flowering_azalea_leaves', { persistent: true, distance: 1, waterlogged: false })
+  f.executor.useStateComponents = true
+  const below = f.pos.offset(0, -1, 0)
+  f.cells.set(below.toString(), f.block('potted_bamboo', below))
+  f.bot.world.raycast = require('prismarine-world/src/worldsync').prototype.raycast
+  f.bot.entity.position = f.pos.offset(0.5, 1.1, 2.5)
+  const place = f.bot._genericPlace
+  f.bot._genericPlace = async (...args) => {
+    assert.equal(f.bot.controlState.sneak, true)
+    await place(...args)
+  }
+  assert.equal(await f.executor.perform(f.task, { layer: 5 }), true)
+  assert.equal(f.bot.blockAt(below).name, 'potted_bamboo')
+  assert.equal(f.bot.controlState.sneak, false)
+})
+
 test('waterlogged top slabs are dry-placed then filled by an audited water bucket in the same layer', async () => {
   const f = waterloggedSlabFixture()
   assert.equal(await f.executor.perform(f.task, { layer: 5 }), true)

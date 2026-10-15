@@ -231,3 +231,18 @@ test('a hopper rim is also a safe intermediate slope in the calibration cycle', 
   assert.deepEqual(result.tasks, [])
   assert.deepEqual(result.railReferences.find(item => item.targetId === f.rail.id).paths[0].shapes, ['ascending_west', 'ascending_east', 'east_west', 'north_south'])
 })
+
+test('construction audit records state-controlled attachment capability without future support writes', () => {
+  const lever = railTask(5, 2, 5, 'lever', { face: 'ceiling', facing: 'north' })
+  const lantern = railTask(6, 2, 5, 'lantern', { hanging: true })
+  const tasks = [railTask(6, 1, 5, 'stone', {}), lever, lantern, railTask(5, 3, 5, 'stone', {}), railTask(6, 3, 5, 'stone', {})]
+  const plan = { ...bounds, version: '1.21.4', tasks }
+  const physical = { tasks, derived: [] }
+  const options = { startLayer: 1, materialState: 10 }
+  const ordinary = planConstructionSupports(plan, physical, options)
+  assert.equal(ordinary.stateControlledAttachments, false)
+  const controlled = planConstructionSupports(plan, physical, { ...options, stateControlledAttachments: true })
+  assert.equal(controlled.stateControlledAttachments, true)
+  assert.deepEqual(controlled.tasks, [])
+  assert.throws(() => planConstructionSupports(plan, physical, { ...options, stateControlledAttachments: 'true' }), /stateControlledAttachments/)
+})

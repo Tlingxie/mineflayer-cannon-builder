@@ -381,7 +381,7 @@ async function runLayeredBuild ({ plan, physicalPlan = preparePhysicalPlan(plan)
         if (!owned.has(key(task.pos)) && (!actual || (!AIR.has(actual.name) && !((task.replacesDerived || task.purpose === 'fluid-staging') && actual.name === 'water')))) throw new Error(`Unowned occupied persistent support at ${task.id}`)
       }
       const constructionTargets = [...mainTargets, ...persistent, ...stages]
-      const planned = planLayerSupports(constructionTargets, { layer, materialState: dirt.stateId, getBlock: readBlock, isTargetAt: pos => allTargets.has(key(pos)), getTargetBlock: task => wanted.get(task.state) })
+      const planned = planLayerSupports(constructionTargets, { layer, materialState: dirt.stateId, getBlock: readBlock, isTargetAt: pos => allTargets.has(key(pos)), getTargetBlock: task => wanted.get(task.state), stateControlledAttachments: workers.every(worker => worker.executor.useStateComponents === true) })
       const inherited = recoveredSupports.filter(task => task.pos.y === layer && readBlock(task.pos)?.stateId === dirt.stateId)
       const supports = [...new Map([...inherited, ...planned].map(task => [key(task.pos), task])).values()]
       const temporary = new Set([...supports, ...persistent].map(task => key(task.pos)))
@@ -954,6 +954,7 @@ function createWorkerReporter (worker, report, recordEvent, controller) {
 
 async function main (options = parseOptions()) {
   const plan = await loadBuildPlan(options)
+  const data = require('minecraft-data')(plan.version)
   assertSchematicAlignment(plan, options)
   const physicalPlan = preparePhysicalPlan(plan)
   if (plan.min.y < -64 || plan.max.y > 320) throw new Error('Build exceeds overworld height limits')
@@ -967,7 +968,7 @@ async function main (options = parseOptions()) {
 
   const recovery = options.resume ? await loadRecovery(options.resume, plan, options) : undefined
   const supportStart = recovery ? (recovery.completedLayers.includes(recovery.highestLayer) ? selected.layers.find(layer => layer > recovery.highestLayer) : recovery.highestLayer) : selected.layers[0]
-  const constructionPlan = recovery?.constructionPlan || (supportStart === undefined ? undefined : require('../lib/constructionSupports').planConstructionSupports(plan, physicalPlan, { startLayer: supportStart, materialState: resolveState('dirt', {}, plan.version).stateId }))
+  const constructionPlan = recovery?.constructionPlan || (supportStart === undefined ? undefined : require('../lib/constructionSupports').planConstructionSupports(plan, physicalPlan, { startLayer: supportStart, materialState: resolveState('dirt', {}, plan.version).stateId, stateControlledAttachments: data.supportFeature('itemsWithComponents') }))
   const { PhysicalBuilder } = require('../lib/physicalBuilder')
   const controller = new AbortController()
   const verificationBackend = await selectVerificationBackend(options, { signal: controller.signal })
@@ -1029,7 +1030,6 @@ async function main (options = parseOptions()) {
     }
     console.log(`All ${workers.length} bots spawned; staging for ${selected.tasks.length} physical targets with layer barriers`)
     const dirt = resolveState('dirt', {}, options.version)
-    const data = require('minecraft-data')(options.version)
     for (const worker of workers) {
       report.workers[worker.id] = { completed: 0, attempts: 0, errors: 0, state: 'ready', position: worker.position }
       const context = createBuildContext(plan, worker.bot.world)

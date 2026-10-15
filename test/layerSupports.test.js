@@ -167,3 +167,42 @@ test('powder snow supplies a selectable outline without claiming to support floo
   assert.deepEqual(plan([snowTask, target(1)], [[pos(0, 63), solid]]), [])
   assert.throws(() => plan([target(0, 0, 'redstone_wire')], [[pos(0, 63), powder]]), /permanent support/i)
 })
+
+test('controlled ceiling levers receive only same-layer temporary side references', () => {
+  const lever = { name: 'lever', shapes: [], getProperties: () => ({ face: 'ceiling', facing: 'north', powered: false }) }
+  const tasks = [target(4, 0, 'lever')]
+  assert.throws(() => plan(tasks, [[pos(0), solid]], { getTargetBlock: () => lever }), error => error.code === 'LAYER_SUPPORT_ATTACHMENT')
+  const supports = plan(tasks, [[pos(0), solid]], { getTargetBlock: () => lever, stateControlledAttachments: true })
+  assert.ok(supports.some(task => key(task.pos) === key(pos(3))))
+  assert.ok(supports.every(task => task.pos.y === 64 && key(task.pos) !== key(pos(4))))
+})
+
+test('controlled hanging lanterns use their completed floor without an upper scaffold', () => {
+  const lantern = { name: 'lantern', shapes: [[0.3125, 0, 0.3125, 0.6875, 0.5, 0.6875]], getProperties: () => ({ hanging: true, waterlogged: false }) }
+  const tasks = [target(3, 0, 'lantern')]
+  assert.throws(() => plan(tasks, [[pos(3, 63), solid]], { getTargetBlock: () => lantern }), error => error.code === 'LAYER_SUPPORT_ATTACHMENT')
+  assert.deepEqual(plan(tasks, [[pos(3, 63), solid]], { getTargetBlock: () => lantern, stateControlledAttachments: true }), [])
+})
+
+test('controlled ceiling levers can connect through a planned block on the same layer', () => {
+  const lever = { name: 'lever', shapes: [], getProperties: () => ({ face: 'ceiling', facing: 'north' }) }
+  const tasks = [target(0), target(3, 0, 'lever')]
+  const supports = plan(tasks, [[pos(0, 63), solid]], { getTargetBlock: task => task.name === 'lever' ? lever : solid, stateControlledAttachments: true })
+  assert.deepEqual(supports.map(task => key(task.pos)), ['1,64,0', '2,64,0'])
+})
+
+test('state components do not allow ceiling hanging signs or other future attachments', () => {
+  for (const name of ['birch_hanging_sign', 'spruce_hanging_sign', 'stone_button']) {
+    const block = { name, shapes: [], getProperties: () => name.endsWith('_hanging_sign') ? { attached: false, rotation: '0' } : { face: 'ceiling', facing: 'north' } }
+    assert.throws(() => plan([target(3, 0, name)], [[pos(0), solid], [pos(3, 65), solid]], { getTargetBlock: () => block, getBlock: position => position.y > 64 ? air : key(position) === key(pos(0)) ? solid : air, stateControlledAttachments: true }), error => error.code === 'LAYER_SUPPORT_ATTACHMENT')
+  }
+})
+
+test('a controlled lever cannot act as a structural bridge for another target', () => {
+  const lever = { name: 'lever', shapes: [], getProperties: () => ({ face: 'ceiling', facing: 'north' }) }
+  const tasks = [target(1, 0, 'lever'), target(2)]
+  const supports = plan(tasks, [[pos(0), solid]], { getTargetBlock: task => task.name === 'lever' ? lever : solid, stateControlledAttachments: true })
+  assert.ok(supports.length > 0)
+  assert.ok(supports.every(task => task.pos.y === 64 && key(task.pos) !== key(pos(1))))
+  assert.throws(() => plan(tasks, [], { stateControlledAttachments: 'true' }), /stateControlledAttachments/)
+})

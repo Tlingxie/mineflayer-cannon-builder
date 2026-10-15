@@ -3,6 +3,15 @@ const assert = require('node:assert/strict')
 const { decodeLitematic, decodeSponge, resolveState, matchesTarget, matchesPhysicalTarget, preparePhysicalPlan, inspectPlan, createBuildContext, itemNameForBlock, pottedPlantForBlock } = require('../lib/strictSchematic')
 const Block = require('prismarine-block')('1.21.4')
 
+test('pressure plate activation is a runtime difference while exact verification retains it', () => {
+  for (const [name, property, active, idle] of [['heavy_weighted_pressure_plate', 'power', 1, 0], ['light_weighted_pressure_plate', 'power', 2, 0], ['stone_pressure_plate', 'powered', true, false]]) {
+    const wanted = Block.fromProperties(name, { [property]: active }, 0)
+    const actual = Block.fromProperties(name, { [property]: idle }, 0)
+    assert.equal(matchesTarget(wanted, actual), true)
+    assert.equal(matchesTarget(wanted, actual, { exact: true }), false)
+  }
+})
+
 test('wall heads and every registered potted plant retain active physical tasks and valid materials', () => {
   for (const version of ['1.21.4', '1.21.11']) {
     const data = require('minecraft-data')(version)

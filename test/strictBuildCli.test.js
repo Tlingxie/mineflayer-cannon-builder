@@ -346,6 +346,37 @@ test('missing workspace coverage at the layer barrier prevents any higher layer 
   assert.deepEqual(env.history.map(row => row.layer), [64])
 })
 
+test('state-controlled ceiling attachments keep future support placement on its own higher layer', async () => {
+  const plan = blueprint([[0, 64, 0, 'lever', { face: 'ceiling', facing: 'north' }], [0, 65, 0, 'stone']])
+  const env = environment(plan)
+  env.world.set('1,64,0', block('stone'))
+  const events = []
+  for (const worker of env.workers) worker.executor.useStateComponents = true
+  const report = await runLayeredBuild({ ...env, settleMs: 0, onEvent: event => events.push(event) })
+  assert.equal(report.status, 'verified')
+  assert.equal(env.history.find(event => event.type === 'place').layer, 64)
+  assert.equal(env.history.findIndex(event => event.type === 'place' && event.layer === 65) > env.history.findIndex(event => event.type === 'place' && event.layer === 64), true)
+  assert.ok(events.findIndex(event => event.type === 'layer-complete' && event.layer === 64) < events.findIndex(event => event.type === 'layer-start' && event.layer === 65))
+  const strict = environment(plan)
+  strict.workers[0].executor.useStateComponents = true
+  await assert.rejects(runLayeredBuild({ ...strict, settleMs: 0 }), /permanent support.*lever|attachment.*lever/i)
+  assert.equal(strict.history.some(event => event.layer === 65), false)
+})
+
+test('CLI construction planning enables controlled attachments only for versions with item components', async t => {
+  const fs = require('node:fs/promises')
+  const planner = require('../lib/constructionSupports')
+  const { main } = require('../examples/strictBuilder')
+  const observed = []
+  const sentinel = new Error('Stop before server selection')
+  t.mock.method(fs, 'mkdir', async () => {})
+  t.mock.method(fs, 'writeFile', async filename => assert.equal(require('node:path').basename(filename), 'inspection.json'))
+  t.mock.method(console, 'log', () => {})
+  t.mock.method(planner, 'planConstructionSupports', (_plan, _physical, options) => { observed.push(options.stateControlledAttachments); throw sentinel })
+  for (const version of ['1.21.11', '1.20.4']) await assert.rejects(main(parseOptions(['--fixture', '--version', version])), error => error === sentinel)
+  assert.deepEqual(observed, [true, false])
+})
+
 test('persistent tower fills empty construction layers then is removed top down after all placements', async () => {
   const plan = blueprint([[0, 64, 0, 'stone'], [3, 67, 0, 'glass']])
   const supports = [64, 65, 66, 67].map(y => persistentSupport(2, y, 0))
