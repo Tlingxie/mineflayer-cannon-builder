@@ -17,6 +17,10 @@ npm run web
 3. 选择 1–30 个 bot，点击「开始施工」。网页显示实际施工报告中的进度、
    当前 Y 层和日志。刷新页面不会停止正在运行的任务。
 
+旧蓝图中的 `minecraft:chain` 在目标版本已改名时会自动识别为
+`minecraft:iron_chain`，保留 `axis` 和 `waterlogged` 属性；仍使用旧名称的
+版本不转换。此兼容适用于 Litematic 和 Sponge 蓝图，原文件不会改写。
+
 ## MIDI 红石音乐轨道
 
 上传 MIDI 后，网页自动把音符和节奏转换成包含音符盒、音色底座、中继器和

@@ -55,3 +55,41 @@ test('after natural block checks, unsupported entities are all named without sil
     return true
   })
 })
+
+test('web inspection accepts legacy chain palettes in Sponge and Litematic files on 1.21.11', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'web-inspect-chain-'))
+  t.after(() => fs.rm(directory, { recursive: true, force: true }))
+  const axes = ['x', 'y', 'z']
+  const vector = (x, y, z) => nbt.comp({ x: nbt.int(x), y: nbt.int(y), z: nbt.int(z) })
+  const files = [
+    ['legacy.schem', nbt.comp({
+      Version: nbt.int(2),
+      DataVersion: nbt.int(4189),
+      Width: nbt.short(3),
+      Height: nbt.short(1),
+      Length: nbt.short(1),
+      Palette: nbt.comp(Object.fromEntries(axes.map((axis, index) => [`minecraft:chain[axis=${axis},waterlogged=false]`, nbt.int(index)]))),
+      BlockData: nbt.byteArray([0, 1, 2])
+    })],
+    ['legacy.litematic', nbt.comp({
+      MinecraftDataVersion: nbt.int(4189),
+      Regions: nbt.comp({
+        main: nbt.comp({
+          Position: vector(0, 0, 0),
+          Size: vector(3, 1, 1),
+          BlockStatePalette: nbt.list(nbt.comp(axes.map(axis => ({ Name: nbt.string('minecraft:chain'), Properties: nbt.comp({ axis: nbt.string(axis), waterlogged: nbt.string('false') }) })))),
+          BlockStates: nbt.longArray([[0, 36]])
+        })
+      })
+    })]
+  ]
+  for (const [name, source] of files) {
+    const filename = path.join(directory, name)
+    await fs.writeFile(filename, zlib.gzipSync(nbt.writeUncompressed(source)))
+    const result = await inspect(filename, '1.21.11')
+    assert.equal(result.blocks, 3)
+    assert.equal(result.activeBlocks, 3)
+    assert.equal(result.layers, 1)
+    assert.deepEqual(result.dimensions, { x: 3, y: 1, z: 1 })
+  }
+})

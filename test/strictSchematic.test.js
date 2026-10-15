@@ -1,6 +1,6 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { decodeLitematic, resolveState, matchesTarget, matchesPhysicalTarget, preparePhysicalPlan, inspectPlan, createBuildContext } = require('../lib/strictSchematic')
+const { decodeLitematic, decodeSponge, resolveState, matchesTarget, matchesPhysicalTarget, preparePhysicalPlan, inspectPlan, createBuildContext } = require('../lib/strictSchematic')
 const Block = require('prismarine-block')('1.21.4')
 
 test('integer state migration preserves the requested tree and distance', () => {
@@ -9,6 +9,57 @@ test('integer state migration preserves the requested tree and distance', () => 
   assert.equal(String(block.getProperties().distance), '7')
   assert.throws(() => resolveState('oak_leaves', { distance: '9' }, '1.21.4'), /Invalid/)
   assert.throws(() => resolveState('stone', { missing: 'true' }, '1.21.4'), /Unknown property/)
+})
+
+test('legacy chains map only when the target registry renamed them and preserve every state', () => {
+  for (const axis of ['x', 'y', 'z']) {
+    for (const waterlogged of ['false', 'true']) {
+      const migrated = resolveState('minecraft:chain', { axis, waterlogged }, '1.21.11')
+      assert.equal(migrated.name, 'iron_chain')
+      assert.equal(migrated.getProperties().axis, axis)
+      assert.equal(String(migrated.getProperties().waterlogged), waterlogged)
+      assert.equal(migrated.stateId, resolveState('iron_chain', { axis, waterlogged }, '1.21.11').stateId)
+    }
+  }
+  assert.equal(resolveState('chain', { axis: 'z' }, '1.21.4').name, 'chain')
+  for (const name of ['iron_chain', 'copper_chain', 'chain_command_block']) assert.equal(resolveState(name, {}, '1.21.11').name, name)
+  assert.throws(() => resolveState('minecraft:chain', { axis: 'invalid' }, '1.21.11'), /Invalid block state/)
+  assert.throws(() => resolveState('minecraft:chain', { missing: 'true' }, '1.21.11'), /Unknown property/)
+  assert.throws(() => resolveState('minecraft:not_a_chain', {}, '1.21.11'), /Unsupported block/)
+  assert.throws(() => resolveState('iron_chain', {}, '1.21.4'), /Unsupported block/)
+})
+
+test('both schematic formats migrate legacy chain palettes through physical item selection', () => {
+  const axes = ['x', 'y', 'z']
+  const litematic = decodeLitematic({
+    MinecraftDataVersion: 4189,
+    Regions: {
+      main: {
+        Position: { x: 0, y: 0, z: 0 },
+        Size: { x: 3, y: 1, z: 1 },
+        BlockStatePalette: axes.map(axis => ({ Name: 'minecraft:chain', Properties: { axis, waterlogged: 'false' } })),
+        BlockStates: [[0, 36]]
+      }
+    }
+  }, '1.21.11', { x: 16, y: 64, z: 16 })
+  const sponge = decodeSponge({
+    DataVersion: 4189,
+    Width: 3,
+    Height: 1,
+    Length: 1,
+    Palette: Object.fromEntries(axes.map((axis, index) => [`minecraft:chain[axis=${axis},waterlogged=false]`, index])),
+    BlockData: [0, 1, 2]
+  }, '1.21.11', { x: 16, y: 64, z: 16 })
+  for (const plan of [litematic, sponge]) {
+    assert.deepEqual(plan.tasks.map(task => task.name), ['iron_chain', 'iron_chain', 'iron_chain'])
+    assert.deepEqual(inspectPlan(plan).issues, [])
+    assert.equal(preparePhysicalPlan(plan).tasks.length, 3)
+    const context = createBuildContext(plan, {})
+    for (const [index, task] of plan.tasks.entries()) {
+      assert.equal(context.blocks[task.state].getProperties().axis, axes[index])
+      assert.equal(context.items[task.state].name, 'iron_chain')
+    }
+  }
 })
 
 test('negative region sizes use the minimum corner without reversing storage', () => {
