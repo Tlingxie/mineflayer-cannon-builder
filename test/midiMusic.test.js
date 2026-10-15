@@ -187,6 +187,16 @@ test('deduplicates only notes with identical quantized time, mapped instrument a
   assert.deepEqual(result.music.notes.map(note => note.instrument).sort(), ['bass', 'harp', 'harp'])
 })
 
+test('compiles dense source MIDI beyond 20000 onsets when mapped notes deduplicate to a bounded track', () => {
+  const rawNotes = Array.from({ length: 47903 }, () => event(0, 144, 60, 100))
+  const result = compile(midi([[...rawNotes, end(0)]]))
+  assert.equal(result.music.sourceNoteCount, 47903)
+  assert.equal(result.music.noteCount, 1)
+  assert.equal(result.music.deduplicatedNotes, 47902)
+  assert.equal(result.music.moduleCount, 1)
+  assert.deepEqual(result.music.size, { x: 6, y: 5, z: 29 })
+})
+
 test('supports a full 52-note chord with isolated side branches and free air above every note', async t => {
   const notes = []
   for (const [channel, program, base] of [[0, 0, 54], [1, 24, 42], [2, 32, 30]]) {
@@ -281,12 +291,20 @@ test('reads long VLQs and skips bounded metadata and sysex without inventing not
 test('enforces duration, note-count and simultaneous voice limits without silent truncation', () => {
   assert.equal(compile(midi([[event(0, 144, 60, 100), end(480 * 600)]])).music.durationSeconds, 300)
   assert.throws(() => compile(midi([[event(0, 144, 60, 100), end(480 * 602)]])), /300.*秒/)
-  const tooMany = Array.from({ length: 20001 }, () => event(0, 144, 60, 100))
-  assert.throws(() => compile(midi([[...tooMany, end(0)]])), /20000|20,000/)
+  const tooMany = Array.from({ length: 100001 }, () => event(0, 144, 60, 100))
+  assert.throws(() => compile(midi([[...tooMany, end(0)]])), /100000|100,000/)
   const chord = [event(0, 192, 0), ...Array.from({ length: 25 }, (_, n) => event(0, 144, 54 + n, 100)),
     event(0, 193, 24), ...Array.from({ length: 25 }, (_, n) => event(0, 145, 42 + n, 100)),
     event(0, 194, 32), ...Array.from({ length: 3 }, (_, n) => event(0, 146, 30 + n, 100)), end(0)]
   assert.throws(() => compile(midi([chord])), /52.*和弦|和弦.*52/)
+})
+
+test('retains file-byte and total-event limits for dense MIDI', () => {
+  const { parseMidi } = require('../lib/midiParser')
+  assert.throws(() => parseMidi(Buffer.alloc(8 * 1024 * 1024 + 1)), /8 MiB/)
+  const controllers = Array.from({ length: 199998 }, () => event(0, 176, 7, 100))
+  assert.equal(parseMidi(midi([[event(0, 144, 60, 100), ...controllers, end(0)]])).sourceNoteCount, 1)
+  assert.throws(() => parseMidi(midi([[event(0, 144, 60, 100), ...controllers, event(0, 176, 7, 100), end(0)]])), /200000/)
 })
 
 test('ignores only legacy CC7 volume 255 sentinels, reports their count and preserves notes and timing', () => {
