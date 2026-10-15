@@ -163,6 +163,22 @@ test('state-controlled ceiling levers may start from a supported floor without p
   assert.ok(f.executor.makeGoal(f.task).facesPos.some(([, , ref]) => ref.equals(below)))
 })
 
+test('a controlled ceiling lever ignores partial side references and clicks its full temporary support', () => {
+  const f = fixture('lever', { face: 'ceiling', facing: 'north', powered: false })
+  f.executor.useStateComponents = true
+  const rod = f.pos.offset(-1, 0, 0)
+  const stair = f.pos.offset(1, 0, 0)
+  const support = f.pos.offset(0, 0, 1)
+  f.cells.set(rod.toString(), f.block('end_rod', rod, { facing: 'up' }))
+  f.cells.set(stair.toString(), f.block('quartz_stairs', stair, { facing: 'east', half: 'bottom', shape: 'straight', waterlogged: false }))
+  f.cells.set(support.toString(), f.block('dirt', support))
+  const leaves = f.pos.offset(0, 0, -1)
+  f.cells.set(leaves.toString(), f.block('oak_leaves', leaves, { persistent: true, distance: 1, waterlogged: false }))
+  const faces = f.executor.makeGoal(f.task).facesPos
+  assert.ok(faces.length)
+  assert.ok(faces.every(([, , ref]) => ref.equals(support)))
+})
+
 test('pressure plates and signs expose their vanilla selectable outline despite empty collision', () => {
   const f = fixture()
   assert.deepEqual(f.executor.selectionShapes(f.block('heavy_weighted_pressure_plate', f.pos, { power: 1 })), [[1 / 16, 0, 1 / 16, 15 / 16, 0.5 / 16, 15 / 16]])
@@ -185,6 +201,23 @@ test('placing against a planted pot sneaks so it cannot remove a plant from a co
   assert.equal(await f.executor.perform(f.task, { layer: 5 }), true)
   assert.equal(f.bot.blockAt(below).name, 'potted_bamboo')
   assert.equal(f.bot.controlState.sneak, false)
+})
+
+test('cake and sign reference interactions are bypassed while placing a block', async () => {
+  for (const name of ['cake', 'cherry_wall_sign']) {
+    const f = fixture('stone')
+    const below = f.pos.offset(0, -1, 0)
+    f.cells.set(below.toString(), f.block(name, below))
+    f.bot.world.raycast = require('prismarine-world/src/worldsync').prototype.raycast
+    f.bot.entity.position = f.pos.offset(0.5, 1.1, 2.5)
+    const place = f.bot._genericPlace
+    f.bot._genericPlace = async (...args) => {
+      assert.equal(f.bot.controlState.sneak, true, name)
+      await place(...args)
+    }
+    assert.equal(await f.executor.perform(f.task, { layer: 5 }), true)
+    assert.equal(f.bot.blockAt(below).name, name)
+  }
 })
 
 test('waterlogged top slabs are dry-placed then filled by an audited water bucket in the same layer', async () => {

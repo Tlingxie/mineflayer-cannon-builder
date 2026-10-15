@@ -206,3 +206,33 @@ test('a controlled lever cannot act as a structural bridge for another target', 
   assert.ok(supports.every(task => task.pos.y === 64 && key(task.pos) !== key(pos(1))))
   assert.throws(() => plan(tasks, [], { stateControlledAttachments: 'true' }), /stateControlledAttachments/)
 })
+
+test('controlled ceiling levers need a full initial support instead of a selectable partial neighbor', () => {
+  const lever = { name: 'lever', shapes: [], getProperties: () => ({ face: 'ceiling', facing: 'east' }) }
+  const eastStairs = { name: 'smooth_quartz_stairs', shapes: [[0, 0, 0, 1, 0.5, 1], [0.5, 0.5, 0, 1, 1, 1]], getProperties: () => ({ half: 'bottom', facing: 'east' }) }
+  const endRod = { name: 'end_rod', shapes: [[0, 0.375, 0.375, 1, 0.625, 0.625]], getProperties: () => ({ facing: 'west' }) }
+  const supports = plan([target(0, 0, 'lever')], [[pos(1), eastStairs], [pos(-1), endRod]], { getTargetBlock: () => lever, stateControlledAttachments: true })
+  assert.ok(supports.some(task => task.pos.x === 0 && Math.abs(task.pos.z) === 1))
+  assert.ok(supports.every(task => task.pos.y === 64 && !['0,64,0', '-1,64,0', '1,64,0'].includes(key(task.pos))))
+})
+
+test('controlled ceiling levers never use full-collision leaves as an actual support or anchor', () => {
+  const lever = { name: 'lever', shapes: [], getProperties: () => ({ face: 'ceiling', facing: 'north' }) }
+  const leaves = { ...solid, name: 'flowering_azalea_leaves' }
+  const tasks = [target(0, 0, 'lever')]
+  const options = { getTargetBlock: () => lever, stateControlledAttachments: true }
+  assert.throws(() => plan(tasks, [[pos(0, 64, -1), leaves]], options), error => error.code === 'LAYER_SUPPORT_UNREACHABLE')
+  assert.throws(() => plan(tasks, [[pos(1, 63), leaves]], options), error => error.code === 'LAYER_SUPPORT_UNREACHABLE')
+  const supports = plan(tasks, [[pos(0, 64, -1), leaves], [pos(3), solid]], options)
+  assert.ok(supports.some(task => Math.abs(task.pos.x) + Math.abs(task.pos.z) === 1))
+  assert.ok(supports.every(task => task.pos.y === 64 && key(task.pos) !== key(pos(0, 64, -1))))
+})
+
+test('controlled ceiling levers do not accept connected planned leaves as virtual supports', () => {
+  const lever = { name: 'lever', shapes: [], getProperties: () => ({ face: 'ceiling', facing: 'north' }) }
+  const leaves = { ...solid, name: 'jungle_leaves' }
+  const tasks = [target(1, 0, 'jungle_leaves'), target(2, 0, 'lever')]
+  const supports = plan(tasks, [[pos(0), solid]], { getTargetBlock: task => task.name === 'lever' ? lever : leaves, stateControlledAttachments: true })
+  assert.ok(supports.some(task => Math.abs(task.pos.x - 2) + Math.abs(task.pos.z) === 1))
+  assert.ok(supports.every(task => task.pos.y === 64 && !['1,64,0', '2,64,0'].includes(key(task.pos))))
+})
