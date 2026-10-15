@@ -180,6 +180,23 @@ test('primed TNT inspection is read-only and distinguishes absent entities from 
 
 const frozenTickQuery = 'The game is frozen\nTarget tick rate: 20.0 per second.\nAverage time per tick: 1.0ms (Target: 50.0ms)\nPercentiles: P50: 1.0ms P95: 2.0ms P99: 3.0ms, sample: 100'
 
+test('decoration snapshots distinguish absence, verify full data and reject reused UUIDs', async t => {
+  let response = 'No entity was found'
+  const f = fixture(t, () => response)
+  const snapshot = await createServerSnapshot(options)
+  const { normalizeDecorationEntities } = require('../lib/physicalDecorationsData')
+  const { Vec3 } = require('vec3')
+  const [expected] = normalizeDecorationEntities({ origin: new Vec3(0, 0, 0), sourceMin: new Vec3(0, 0, 0), entities: [{ regionPosition: new Vec3(0, 0, 0), data: { id: 'minecraft:painting', Pos: [70.5, 64.5, 4.03125], TileX: 70, TileY: 64, TileZ: 4, facing: 0, variant: 'minecraft:wasteland', Rotation: [0, 0] } }] })
+  assert.equal(await snapshot.readDecoration(expected), null)
+  response = 'Painting has the following entity data: {UUID:[I;1,2,3,4],Pos:[70.5d,64.5d,4.03125d],block_pos:[I;70,64,4],facing:0b,variant:"minecraft:wasteland",Rotation:[0.0f,0.0f],Invisible:0b,Invulnerable:0b,NoGravity:0b}'
+  assert.deepEqual((await snapshot.readDecoration(expected)).differences, [])
+  assert.equal((await snapshot.verifyDecorations([expected])).checked, 1)
+  await assert.rejects(snapshot.verifyDecorations([expected, { ...expected, id: 'second' }]), /same UUID/)
+  response = response.replace('wasteland', 'kebab')
+  await assert.rejects(snapshot.verifyDecorations([expected]), /variant|decoration/i)
+  assert.ok(f.commands.every(command => command.includes('distance=..0.04,sort=nearest,limit=1]')))
+})
+
 test('construction tick inspection requires frozen 20 TPS and unchanged gametime across at least 150ms', async t => {
   const samples = []
   const f = fixture(t, command => {

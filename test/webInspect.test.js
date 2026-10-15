@@ -46,14 +46,38 @@ test('web inspection accepts real bubble and fire blueprint data with honest nat
 })
 
 test('after natural block checks, unsupported entities are all named without silently discarding them', async t => {
-  const filename = await schematic(t, ['armor_stand', 'armor_stand', 'item_frame'])
+  const filename = await schematic(t, ['pig', 'pig', 'zombie'])
   await assert.rejects(inspect(filename, '1.21.11'), error => {
     assert.match(error.message, /方块检查已通过/)
-    assert.match(error.message, /盔甲架 \(armor_stand\) × 2/)
-    assert.match(error.message, /item_frame × 1/)
+    assert.match(error.message, /pig × 2/)
+    assert.match(error.message, /zombie × 1/)
     assert.match(error.message, /尚未开始施工/)
     return true
   })
+})
+
+test('web inspection accepts all 29 supported decorations without discarding entity totals', async t => {
+  const overview = await inspect(await schematic(t, Array(29).fill('armor_stand')), '1.21.11')
+  assert.equal(overview.entities, 29)
+  assert.equal(overview.decorations, 29)
+  assert.equal(overview.minecarts, 0)
+})
+
+test('web inspection rejects unsupported banner patterns before accepting the blueprint', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'web-inspect-banner-'))
+  t.after(() => fs.rm(directory, { recursive: true, force: true }))
+  const filename = path.join(directory, 'banner.schem')
+  const source = nbt.comp({
+    Version: nbt.int(2),
+    Width: nbt.short(1),
+    Height: nbt.short(1),
+    Length: nbt.short(1),
+    Palette: nbt.comp({ 'minecraft:white_banner': nbt.int(0) }),
+    BlockData: nbt.byteArray([0]),
+    BlockEntities: nbt.list(nbt.comp([{ Pos: nbt.intArray([0, 0, 0]), id: nbt.string('minecraft:banner'), patterns: nbt.list(nbt.comp([{ color: nbt.string('black'), pattern: nbt.string('minecraft:missing_pattern') }])) }]))
+  })
+  await fs.writeFile(filename, zlib.gzipSync(nbt.writeUncompressed(source)))
+  await assert.rejects(inspect(filename, '1.21.11'), /Unsupported banner pattern/)
 })
 
 test('web inspection accepts legacy chain palettes in Sponge and Litematic files on 1.21.11', async t => {

@@ -476,6 +476,15 @@ test('supports are removed and targets reverified before any next-layer task sta
   assert.ok(events.filter(event => event.type === 'task-start').every(event => event.layer === event.activeLayer))
 })
 
+test('a missing naturally generated bed head blocks dispatch of the next layer', async () => {
+  const plan = blueprint([[0, 64, 0, 'white_bed', { facing: 'north', part: 'foot' }], [0, 64, -1, 'white_bed', { facing: 'north', part: 'head' }], [0, 65, 0, 'glass']])
+  const env = environment(plan)
+  env.world.set('0,63,-1', block('stone'))
+  await assert.rejects(runLayeredBuild({ ...env, settleMs: 0 }), /verification.*failed/i)
+  assert.equal(env.history.some(event => event.layer === 65), false)
+  assert.equal(env.history.some(event => event.type === 'place' && event.pos === '0,64,-1'), false)
+})
+
 test('cleanup damage fails the current layer without dispatching higher work', async () => {
   assert.equal(typeof runLayeredBuild, 'function')
   const plan = blueprint([[0, 64, 0, 'stone'], [4, 64, 0, 'stone'], [4, 65, 0, 'glass']])
@@ -638,6 +647,17 @@ test('a plan with unhandled entities cannot receive verified status', async () =
   await assert.rejects(runLayeredBuild({ ...environment(plan), options: { maxAttempts: 2 }, signal: new AbortController().signal, settleMs: 0 }), /entities have not been handled/)
 })
 
+test('a no-op entity hook cannot mark uncovered blueprint entities verified', async () => {
+  const plan = blueprint([[0, 64, 0, 'stone']])
+  plan.entities = [{ data: { id: 'minecraft:armor_stand' } }]
+  await assert.rejects(runLayeredBuild({ ...environment(plan), settleMs: 0, afterBuild: async () => {} }), /entity.*verification|entities.*verified/i)
+})
+
+test('a banner cannot reach verified status without its final pattern verification', async () => {
+  const plan = blueprint([[0, 64, 0, 'white_banner']])
+  await assert.rejects(runLayeredBuild({ ...environment(plan), settleMs: 0, afterBuild: async () => {} }), /banner.*verification|verification.*banner/i)
+})
+
 test('shutdown does not reopen close timers on a client which has already ended', async () => {
   const bot = new EventEmitter()
   let quit = 0
@@ -675,6 +695,93 @@ test('mechanism hooks place carts on their rail layer and ignite portals only af
   assert.deepEqual(calls, [['cart', 'cart'], ['portal'], ['verify']])
   assert.equal(report.entitiesVerified, 1)
   assert.equal(report.entityVerification.verified, true)
+})
+
+test('all 29 decorations are placed after the final block layer and included in strict entity verification', async () => {
+  const plan = blueprint([...Array.from({ length: 29 }, (_, x) => [x, 64, 0, 'stone']), [30, 65, 0, 'glass']])
+  plan.sourceMin = { x: 0, y: 0, z: 0 }
+  plan.entities = Array.from({ length: 29 }, (_, x) => ({ regionPosition: { x: 0, y: 0, z: 0 }, data: { id: 'minecraft:armor_stand', Pos: [x + 0.5, 1, 0.5], Rotation: [0, 0] } }))
+  const env = environment(plan)
+  const events = []
+  const placements = []
+  const evidence = { command: 'data get entity decoration', response: 'verified decoration' }
+  const snapshot = {
+    readDecoration: async () => null,
+    verifyDecorations: async entities => ({ verified: true, checked: entities.length, entities: entities.map(entity => ({ id: entity.id, uuid: `uuid:${entity.id}`, pos: entity.pos })), evidence: [evidence] })
+  }
+  class DecorationBuilder {
+    async placeDecoration (entity) {
+      assert.ok(events.some(event => event.type === 'layer-complete' && event.layer === 65))
+      placements.push(entity.id)
+      return { verified: true, uuid: `uuid:${entity.id}`, pos: entity.pos }
+    }
+  }
+  const hooks = createMechanismHooks(plan, { DecorationBuilder, verificationBackend: { backend: 'external-readonly-console', snapshot } })
+  const report = await runLayeredBuild({ ...env, ...hooks, settleMs: 0, onEvent: event => events.push(event) })
+  assert.equal(placements.length, 29)
+  assert.equal(report.entitiesExpected, 29)
+  assert.equal(report.entitiesVerified, 29)
+  assert.equal(report.decorationsVerified, 29)
+  assert.deepEqual(report.entitiesPending, [])
+  assert.equal(report.entityVerification.verified, true)
+  assert.equal(report.entityVerification.entities, 29)
+  assert.equal(events.filter(event => event.type === 'decoration-placement').length, 29)
+  assert.ok(report.verificationEvidence.includes(evidence))
+  await hooks.afterBuild({ workers: env.workers, signal: new AbortController().signal, report, emit: () => {}, readOnly: true })
+  assert.equal(placements.length, 29)
+})
+
+test('decorations require strict snapshot coverage and cannot pass with a partial final result', async () => {
+  const plan = blueprint([[0, 64, 0, 'stone']])
+  plan.sourceMin = { x: 0, y: 0, z: 0 }
+  plan.entities = [{ regionPosition: { x: 0, y: 0, z: 0 }, data: { id: 'minecraft:armor_stand', Pos: [0.5, 1, 0.5], Rotation: [0, 0] } }]
+  assert.throws(() => createMechanismHooks(plan), /decoration.*snapshot|snapshot.*decoration/i)
+  class DecorationBuilder {
+    async placeDecoration () { return { verified: true, uuid: 'one' } }
+  }
+  const hooks = createMechanismHooks(plan, {
+    DecorationBuilder,
+    verificationBackend: { backend: 'external-readonly-console', snapshot: { readDecoration: async () => null, verifyDecorations: async () => ({ verified: true, checked: 0, entities: [] }) } }
+  })
+  await assert.rejects(hooks.afterBuild({ workers: [{ id: 'bot', position: new Vec3(0, 68, 0), bot: {}, executor: {} }], report: {}, emit: () => {} }), /decoration.*verification|verification.*decoration/i)
+})
+
+test('mixed entity verification preserves minecart results while counting decorations', async () => {
+  const plan = blueprint([[0, 64, 0, 'stone']])
+  plan.sourceMin = { x: 0, y: 0, z: 0 }
+  plan.entities = [
+    { regionPosition: { x: 0, y: 0, z: 0 }, data: { id: 'minecraft:minecart' } },
+    { regionPosition: { x: 0, y: 0, z: 0 }, data: { id: 'minecraft:armor_stand', Pos: [0.5, 1, 0.5] } }
+  ]
+  const cartResult = Object.freeze({ verified: true, entities: 1, matches: [{ id: 'cart', uuid: 'cart-uuid' }], verifiedProperties: ['type', 'position', 'uniqueUUID', 'Items', 'Enabled'] })
+  const hooks = createMechanismHooks(plan, {
+    recoveredEntities: [{ id: 'cart', verified: true }],
+    mechanisms: { normalizeMinecartEntities: () => [{ id: 'cart', layer: 64 }], ignitePortals: async () => ({ verified: true }) },
+    verificationBackend: { backend: 'external-readonly-console', snapshot: { readDecoration: async () => null, verifyMinecarts: async () => cartResult, verifyDecorations: async () => ({ verified: true, checked: 1, entities: [{ id: 'entity:1:armor_stand', uuid: 'stand-uuid' }], evidence: [] }) } }
+  })
+  const report = {}
+  await hooks.afterBuild({ workers: [], report, emit: () => {}, readOnly: true })
+  assert.equal(report.entitiesExpected, 2)
+  assert.equal(report.entitiesVerified, 2)
+  assert.deepEqual(report.entitiesPending, [])
+  assert.deepEqual(report.entityVerification.verifiedProperties, ['type', 'position', 'uniqueUUID', 'Items', 'Enabled'])
+  assert.deepEqual(report.entityVerification.matches.map(match => match.uuid), ['cart-uuid', 'stand-uuid'])
+  assert.equal(cartResult.entities, 1)
+})
+
+test('banner pattern verification is required after building and during read-only rechecks', async () => {
+  const plan = blueprint([[0, 64, 0, 'white_banner', {}, { patterns: [{ color: 'black', pattern: 'minecraft:stripe_center' }] }]])
+  let checks = 0
+  const hooks = createMechanismHooks(plan, {
+    verificationBackend: { backend: 'external-readonly-console', snapshot: { verifyBanners: async tasks => { checks++; return { verified: true, checked: tasks.length, evidence: [{ command: 'data get block 0 64 0' }] } } } }
+  })
+  const context = { workers: [], report: {}, emit: () => {} }
+  await hooks.afterBuild(context)
+  assert.equal(context.report.bannerVerification.checked, 1)
+  await hooks.afterBuild({ ...context, readOnly: true })
+  assert.equal(checks, 2)
+  const unavailable = createMechanismHooks(plan)
+  await assert.rejects(unavailable.afterBuild(context), /banner.*snapshot|snapshot.*banner/i)
 })
 
 test('verified-layer checkpoint runs after the completion journal and blocks the next layer until settled', async () => {

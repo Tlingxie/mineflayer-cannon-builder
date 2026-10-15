@@ -200,6 +200,7 @@ async function runLayeredBuild ({ plan, physicalPlan = preparePhysicalPlan(plan)
   const wanted = new Map([...plan.tasks, ...selection.tasks].map(task => [task.state, Block.fromStateId(task.state, 0)]))
   wanted.set(dirt.stateId, dirt)
   const allSelected = plan.tasks.filter(task => selection.selected.has(task.pos.y))
+  const generatedBedHeads = selection.derived.filter(task => task.reason === 'generated-by-bed')
   const active = new Set()
   const started = Date.now()
   Object.assign(report, { status: 'building', completeBlueprint: selection.completeBlueprint, completed: 0, resumedReadOnlyBlocks: 0, attempts: 0, dependencyDeferrals: 0, activeWorkers: 0, peakActiveWorkers: 0, scaffoldBlocks: 0, derivedTargets: selection.derived.length, layers: [], workers: report.workers || {} })
@@ -342,7 +343,7 @@ async function runLayeredBuild ({ plan, physicalPlan = preparePhysicalPlan(plan)
       report.currentLayer = recovery.highestLayer
       await calibrateRails(selection.tasks.filter(task => task.pos.y < recovery.highestLayer || verifiedLayers.has(task.pos.y)))
       for (const layer of constructionLayers.filter(layer => layer < recovery.highestLayer || verifiedLayers.has(layer))) {
-        const missing = selection.tasks.filter(task => task.pos.y === layer && !isSatisfied(task))
+        const missing = [...selection.tasks, ...generatedBedHeads].filter(task => task.pos.y === layer && !isSatisfied(task))
         if (missing.length) throw new Error(`Recovery found a damaged completed lower layer at ${missing[0].id}; lower-layer replacement is forbidden`)
         checkAir(layer)
       }
@@ -361,6 +362,7 @@ async function runLayeredBuild ({ plan, physicalPlan = preparePhysicalPlan(plan)
       checkSignal(signal)
       report.currentLayer = layer
       const targets = selection.tasks.filter(task => task.pos.y === layer)
+      const verificationTargets = [...targets, ...generatedBedHeads.filter(task => task.pos.y === layer)]
       if (recovery && (layer < recovery.highestLayer || verifiedLayers.has(layer))) {
         report.completed += targets.length
         report.resumedReadOnlyBlocks += targets.length
@@ -400,14 +402,14 @@ async function runLayeredBuild ({ plan, physicalPlan = preparePhysicalPlan(plan)
         emit({ type: 'fluid-staging-restore', phase: 'targets', layer, targetIds: roots.map(task => task.id) })
         await runPhase('targets', layer, roots, roots, new Set())
       }
-      verifyTargets(targets)
+      verifyTargets(verificationTargets)
       if (afterLayer) await afterLayer({ layer, plan, workers, signal, report, readBlock, emit })
       await calibrateRails(selection.tasks.filter(task => task.pos.y <= layer))
       await cleanPersistent([...owned.values()].filter(task => Number.isSafeInteger(task.releaseLayer) && task.releaseLayer <= layer), targets)
       checkSignal(signal)
       await calibrateRails(selection.tasks.filter(task => task.pos.y <= layer))
       await parkForRead('layer-complete')
-      verifyTargets(targets)
+      verifyTargets(verificationTargets)
       checkAir(layer)
       report.completed += targets.length
       report.layers.push({ y: layer, blocks: targets.length, supports: supports.length, verifiedAt: Date.now() })
@@ -447,6 +449,9 @@ async function runLayeredBuild ({ plan, physicalPlan = preparePhysicalPlan(plan)
     if (settleMs) await sleep(Math.max(300, settleMs))
     checkSignal(signal)
     await parkForRead('final-verification')
+    if (plan.entities?.length && (!report.entityVerification?.verified || !Number.isSafeInteger(report.entitiesExpected) || report.entitiesVerified !== report.entitiesExpected || (selection.completeBlueprint && report.entitiesExpected !== plan.entities.length))) throw new Error('Final entity verification did not cover every selected blueprint entity')
+    const banners = allSelected.filter(task => task.name.endsWith('_banner'))
+    if (banners.length && (!report.bannerVerification?.verified || report.bannerVerification.checked !== banners.length)) throw new Error('Final banner verification did not cover every selected target')
     if (plan.music) {
       report.musicVerification = verifyNoteBlockMusic(allSelected, readBlock, plan.version)
       emit({ type: 'music-verified', phase: 'verification', ...report.musicVerification })
@@ -656,7 +661,7 @@ async function grantManagedCloneOperators (workers, options, verification, {
 }
 
 async function prepareMechanismStaging (plan, { selectedLayers = new Set(plan.layers), signal, mechanisms = require('../lib/physicalMechanisms'), verificationBackend = { backend: 'physical-gui' } } = {}) {
-  const staged = mechanisms.normalizeMinecartEntities(plan, { frozen: true }).filter(entity => entity.stagedStrategy && selectedLayers.has(entity.layer))
+  const staged = mechanisms.normalizeMinecartEntities(plan, { frozen: true, allowDecorations: true }).filter(entity => entity.stagedStrategy && selectedLayers.has(entity.layer))
   if (!staged.length) return { frozen: false, entityIds: [] }
   if (!['managed-readonly-rcon', 'external-readonly-console'].includes(verificationBackend.backend) || !verificationBackend.snapshot?.readTickState) throw new Error('Enclosed minecart staging requires managed or external server freeze attestation')
   checkSignal(signal)
@@ -666,16 +671,21 @@ async function prepareMechanismStaging (plan, { selectedLayers = new Set(plan.la
   return { frozen: true, entityIds: staged.map(entity => entity.id), attestation }
 }
 
-function createMechanismHooks (plan, { selectedLayers = new Set(plan.layers), recoveredEntities = [], frozen = false, mechanisms = require('../lib/physicalMechanisms'), inventory = require('../lib/physicalInventory'), verificationBackend = { backend: 'physical-gui' } } = {}) {
-  const entities = mechanisms.normalizeMinecartEntities(plan, { frozen }).filter(entity => selectedLayers.has(entity.layer))
-  const completed = new Map(recoveredEntities.filter(entity => entity.verified && entities.some(expected => expected.id === entity.id)).map(entity => [entity.id, entity]))
-  const recoveryChecks = new Map(completed)
+function createMechanismHooks (plan, { selectedLayers = new Set(plan.layers), recoveredEntities = [], frozen = false, mechanisms = require('../lib/physicalMechanisms'), inventory = require('../lib/physicalInventory'), verificationBackend = { backend: 'physical-gui' }, DecorationBuilder } = {}) {
+  const entities = mechanisms.normalizeMinecartEntities(plan, { frozen, allowDecorations: true }).filter(entity => selectedLayers.has(entity.layer))
   const completeBlueprint = plan.layers.every(layer => selectedLayers.has(layer))
+  const decorations = (plan.entities?.length ? require('../lib/physicalDecorationsData').normalizeDecorationEntities(plan) : []).filter(entity => completeBlueprint || selectedLayers.has(Math.floor(entity.pos.y)))
+  if (decorations.length && (!verificationBackend.snapshot?.readDecoration || !verificationBackend.snapshot?.verifyDecorations)) throw new Error('Decoration placement requires a strict read-only snapshot with decoration verification')
+  const completed = new Map(recoveredEntities.filter(entity => entity.verified && entities.some(expected => expected.id === entity.id)).map(entity => [entity.id, entity]))
+  const completedDecorations = new Map()
+  const recoveryChecks = new Map(completed)
   const updateReport = report => {
-    report.entitiesExpected = entities.length
-    report.entitiesVerified = completed.size
-    report.entitiesPending = entities.filter(entity => !completed.has(entity.id)).map(entity => entity.id)
-    report.entities = [...completed.values()]
+    report.entitiesExpected = entities.length + decorations.length
+    report.entitiesVerified = completed.size + completedDecorations.size
+    report.entitiesPending = [...entities.filter(entity => !completed.has(entity.id)), ...decorations.filter(entity => !completedDecorations.has(entity.id))].map(entity => entity.id)
+    report.entities = [...completed.values(), ...completedDecorations.values()]
+    report.decorationsExpected = decorations.length
+    report.decorationsVerified = completedDecorations.size
   }
   return {
     async afterLayer ({ layer, workers, signal, report, emit }) {
@@ -745,7 +755,8 @@ function createMechanismHooks (plan, { selectedLayers = new Set(plan.layers), re
       report.verificationEvidence = []
       const snapshot = verificationBackend.snapshot
       const containers = plan.tasks.filter(task => selectedLayers.has(task.pos.y) && inventory.isContainerTask(task))
-      if (readOnly && !snapshot && (entities.length || containers.length)) throw new Error('Final checks after natural generation require a read-only snapshot; physical observation or container interaction is not allowed')
+      const banners = plan.tasks.filter(task => selectedLayers.has(task.pos.y) && task.name.endsWith('_banner'))
+      if (readOnly && !snapshot && (entities.length || decorations.length || containers.length)) throw new Error('Final checks after natural generation require a read-only snapshot; physical observation or container interaction is not allowed')
       const readSnapshot = async operation => {
         try {
           const result = await operation()
@@ -757,7 +768,25 @@ function createMechanismHooks (plan, { selectedLayers = new Set(plan.layers), re
         }
       }
       updateReport(report)
-      if (report.entitiesPending.length) throw new Error(`Entity verification pending: ${report.entitiesPending.join(', ')}`)
+      const pendingMinecarts = entities.filter(entity => !completed.has(entity.id))
+      if (pendingMinecarts.length) throw new Error(`Entity verification pending: ${pendingMinecarts.map(entity => entity.id).join(', ')}`)
+      if (!readOnly && decorations.length) {
+        report.status = 'placing-decorations'
+        const Builders = DecorationBuilder || require('../lib/physicalDecorations').PhysicalDecorations
+        for (const entity of decorations.filter(entity => !completedDecorations.has(entity.id))) {
+          checkSignal(signal)
+          const worker = workers.filter(worker => !worker.bot._client?.ended).slice().sort((a, b) => a.position.distanceSquared(entity.pos) - b.position.distanceSquared(entity.pos))[0]
+          if (!worker) throw new Error(`No connected worker for decoration ${entity.id}`)
+          const builder = new Builders({ bot: worker.bot, executor: worker.executor, snapshot, signal, onEvent: event => emit({ ...event, entityId: entity.id, workerId: worker.id }) })
+          const result = await builder.placeDecoration(entity, { signal })
+          if (!result?.verified) throw new Error(`Decoration placement was not verified: ${entity.id}`)
+          checkSignal(signal)
+          const record = { ...result, id: entity.id, name: entity.name, layer: Math.floor(entity.pos.y), workerId: worker.id }
+          completedDecorations.set(entity.id, record)
+          updateReport(report)
+          emit({ type: 'decoration-placement', action: 'complete', phase: 'decoration', entityId: entity.id, workerId: worker.id, record })
+        }
+      }
       let portalPlan = plan
       if (!completeBlueprint) {
         const frames = mechanisms.findPortalFrames ? mechanisms.findPortalFrames(plan) : []
@@ -777,12 +806,35 @@ function createMechanismHooks (plan, { selectedLayers = new Set(plan.layers), re
       }
       report.status = 'verifying-entities'
       report.entityVerification = { verified: false, backend: verificationBackend.backend }
-      const entityResult = entities.length
+      let entityResult = entities.length
         ? await (snapshot ? readSnapshot(() => snapshot.verifyMinecarts(entities, { signal })) : mechanisms.verifyMinecarts(workers, entities, { signal }))
         : { verified: true, entities: 0, matches: [] }
+      if (decorations.length) {
+        report.decorationVerification = { verified: false, backend: verificationBackend.backend }
+        const result = await readSnapshot(() => snapshot.verifyDecorations(decorations, { signal }))
+        const matches = result.entities
+        if (!result.verified || result.checked !== decorations.length || !Array.isArray(matches) || matches.length !== decorations.length || new Set(matches.map(match => match.id)).size !== decorations.length || decorations.some(entity => !matches.some(match => match.id === entity.id))) throw new Error('Final decoration verification did not cover every target')
+        report.decorationVerification = { ...result, backend: verificationBackend.backend }
+        for (const entity of decorations) completedDecorations.set(entity.id, { ...completedDecorations.get(entity.id), ...matches.find(match => match.id === entity.id), id: entity.id, name: entity.name, layer: Math.floor(entity.pos.y), verified: true })
+        updateReport(report)
+        entityResult = {
+          ...entityResult,
+          minecarts: { entities: entityResult.entities, matches: entityResult.matches },
+          entities: entityResult.entities + matches.length,
+          matches: [...(entityResult.matches || []), ...matches],
+          decorations: report.decorationVerification
+        }
+      }
       report.entityVerification = { ...entityResult, backend: verificationBackend.backend }
       if (!report.entityVerification.verified) throw new Error('Final live entity verification failed')
       report.entitiesVerified = report.entityVerification.entities
+      if (banners.length) {
+        report.bannerVerification = { verified: false, backend: verificationBackend.backend }
+        if (!snapshot?.verifyBanners) throw new Error('Banner verification requires a strict read-only snapshot')
+        const result = await readSnapshot(() => snapshot.verifyBanners(banners, { signal }))
+        if (!result.verified || result.checked !== banners.length) throw new Error('Final banner verification did not cover every target')
+        report.bannerVerification = { ...result, backend: verificationBackend.backend }
+      }
       report.status = 'verifying-containers'
       await verifyBuildContents({
         tasks: containers,

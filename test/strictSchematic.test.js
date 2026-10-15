@@ -183,6 +183,32 @@ test('natural components become explicit verification obligations, never block p
   assert.deepEqual(result.derived.map(t => t.id), ['0', '1', '3'])
 })
 
+test('bed feet retain player placement while correctly paired heads remain same-layer verification targets', () => {
+  const tasks = []
+  for (const [facing, dx, dz, x] of [['north', 0, -1, 0], ['east', 1, 0, 4], ['south', 0, 1, 8], ['west', -1, 0, 12]]) {
+    for (const [part, px, pz] of [['foot', x, 0], ['head', x + dx, dz]]) {
+      const bed = resolveState('white_bed', { facing, part })
+      tasks.push({ id: `${px},64,${pz}`, name: bed.name, state: bed.stateId, pos: { x: px, y: 64, z: pz } })
+    }
+  }
+  const plan = { version: '1.21.4', tasks, air: [], layers: [64], blockEntities: [], entities: [] }
+  const physical = preparePhysicalPlan(plan)
+  assert.deepEqual(physical.tasks.map(task => task.id), ['0,64,0', '4,64,0', '8,64,0', '12,64,0'])
+  assert.equal(physical.derived.length, 4)
+  assert.ok(physical.derived.every(task => task.reason === 'generated-by-bed' && task.pos.y === 64))
+  assert.deepEqual(physical.tasks[0].generatedTarget, { id: '0,64,-1', name: 'white_bed', state: tasks[1].state, pos: { x: 0, y: 64, z: -1 } })
+  assert.deepEqual(inspectPlan(plan).issues, [])
+})
+
+test('incomplete or inconsistent bed pairs are rejected during inspection and placement planning', () => {
+  const task = (part, facing, name = 'white_bed') => ({ id: part, name, state: resolveState(name, { part, facing }).stateId, pos: { x: 0, y: 64, z: part === 'foot' ? 0 : -1 } })
+  const fixture = tasks => ({ version: '1.21.4', tasks, air: [], layers: [64], blockEntities: [], entities: [] })
+  for (const tasks of [[task('foot', 'north')], [task('head', 'north')], [task('foot', 'north'), task('head', 'south')], [task('foot', 'north'), task('head', 'north', 'red_bed')]]) {
+    assert.throws(() => preparePhysicalPlan(fixture(tasks)), /bed.*pair|bed.*blueprint/i)
+    assert.throws(() => inspectPlan(fixture(tasks)), /bed.*pair|bed.*blueprint/i)
+  }
+})
+
 test('bubble columns receive source-water preparation while keeping original direction for final verification', () => {
   const bubble = resolveState('bubble_column', { drag: false }, '1.21.11')
   const task = { id: '0,1,0', type: 'place', name: 'bubble_column', state: bubble.stateId, pos: { x: 0, y: 1, z: 0 } }

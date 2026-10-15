@@ -2,6 +2,7 @@
 const { readPlan, inspectPlan, preparePhysicalPlan } = require('../lib/strictSchematic')
 const { selectedPhysicalTasks } = require('../examples/strictBuilder')
 const { normalizeMinecartEntities, findPortalFrames } = require('../lib/physicalMechanisms')
+const { normalizeDecorationEntities } = require('../lib/physicalDecorationsData')
 const { normalizeItems, isContainerTask } = require('../lib/physicalInventory')
 
 async function inspect (filename, version) {
@@ -12,21 +13,23 @@ async function inspect (filename, version) {
   if (!physical.tasks.length) throw new Error('Blueprint has no directly placeable blocks')
   let entities
   try {
-    entities = normalizeMinecartEntities(plan, { frozen: true })
+    entities = normalizeMinecartEntities(plan, { frozen: true, allowDecorations: true })
   } catch (error) {
     if (error.message.startsWith('Unsupported entity:')) {
       const unsupported = new Map()
       for (const entity of plan.entities) {
-        const name = entity.data?.id?.replace(/^minecraft:/, '') || 'unknown'
-        if (!['minecart', 'chest_minecart', 'hopper_minecart'].includes(name)) unsupported.set(name, (unsupported.get(name) || 0) + 1)
+        const name = (entity.data || entity)?.id?.replace(/^minecraft:/, '') || 'unknown'
+        if (!['minecart', 'chest_minecart', 'hopper_minecart', 'armor_stand', 'item_frame', 'glow_item_frame', 'painting'].includes(name)) unsupported.set(name, (unsupported.get(name) || 0) + 1)
       }
       const details = [...unsupported].map(([name, count]) => `${name === 'armor_stand' ? '盔甲架 (armor_stand)' : name} × ${count}`).join('、')
       throw new Error(`方块检查已通过，但此蓝图还包含暂不支持自动装配的实体：${details}。尚未开始施工。`)
     }
     throw error
   }
+  const decorations = normalizeDecorationEntities(plan)
   findPortalFrames(plan)
   for (const task of plan.tasks) {
+    if (task.name.endsWith('_banner')) require('../lib/physicalBanners').bannerPatterns(task)
     if (task.blockEntity?.components && Object.keys(task.blockEntity.components).length) throw new Error('Unsupported block entity components')
     if (isContainerTask(task)) normalizeItems(task.blockEntity.Items, version)
   }
@@ -49,6 +52,9 @@ async function inspect (filename, version) {
     blocks: plan.tasks.length,
     activeBlocks: physical.tasks.length,
     derivedBlocks: physical.derived.length,
+    entities: entities.length + decorations.length,
+    minecarts: entities.length,
+    decorations: decorations.length,
     layers: plan.layers.length,
     dimensions: Object.fromEntries(['x', 'y', 'z'].map(axis => [axis, plan.max[axis] - plan.min[axis]])),
     sourceMin: plan.sourceMin || null,

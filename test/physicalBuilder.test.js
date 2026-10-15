@@ -96,6 +96,16 @@ function waterloggedSlabFixture ({ existing, acknowledge = true, multi = false }
   return f
 }
 
+test('creative banner inventory distinguishes ordered pattern components', async () => {
+  const f = fixture('black_banner', { rotation: 0 })
+  const { bannerItemComponents } = require('../lib/physicalBanners')
+  const components = bannerItemComponents({ name: 'black_banner', blockEntity: { Patterns: [{ Pattern: 'bo', Color: 0 }] } })
+  await f.executor.equip('black_banner', undefined, {}, components)
+  assert.deepEqual(f.bot.heldItem.components, components)
+  await f.executor.equip('black_banner')
+  assert.equal(f.bot.heldItem.components.some(component => component.type === 'banner_patterns'), false)
+})
+
 test('waterlogged top slabs are dry-placed then filled by an audited water bucket in the same layer', async () => {
   const f = waterloggedSlabFixture()
   assert.equal(await f.executor.perform(f.task, { layer: 5 }), true)
@@ -200,12 +210,32 @@ test('rejects cancelled tasks before equipping, moving, or placing', async () =>
   assert.deepEqual(f.events, [])
 })
 
-test('rejects unsupported two-block plants and beds', async () => {
+test('rejects unsupported two-block plants and independent bed heads', async () => {
   for (const name of ['tall_grass', 'red_bed']) {
-    const f = fixture(name)
+    const f = fixture(name, name === 'red_bed' ? { part: 'head' } : {})
     await assert.rejects(f.executor.perform(f.task, { layer: 5 }), /multi.block/i)
     assert.deepEqual(f.events, [])
   }
+})
+
+test('bed foot placement uses the floor and permits its matching head in the same layer', async () => {
+  const f = fixture('red_bed', { part: 'foot', facing: 'north', occupied: false })
+  f.executor.useStateComponents = true
+  const below = f.pos.offset(0, -1, 0)
+  f.cells.set(below.toString(), f.block('stone', below))
+  f.cells.set(f.pos.offset(0, -1, -1).toString(), f.block('stone', f.pos.offset(0, -1, -1)))
+  f.bot.entity.position = f.pos.offset(0.5, 1.2, 2.5)
+  f.bot.world.raycast = require('prismarine-world/src/worldsync').prototype.raycast
+  const goal = f.executor.makeGoal(f.task)
+  assert.ok(goal.facesPos.every(([, , ref]) => ref.y === below.y))
+  const place = f.bot._genericPlace
+  f.bot._genericPlace = async (...args) => {
+    await place(...args)
+    const head = f.pos.offset(0, 0, -1)
+    f.cells.set(head.toString(), f.block('red_bed', head, { part: 'head', facing: 'north', occupied: false }))
+  }
+  assert.equal(await f.executor.perform(f.task, { layer: 5 }), true)
+  assert.equal(f.bot.blockAt(f.pos.offset(0, 0, -1)).getProperties().part, 'head')
 })
 
 test('does not create scaffolds when a placement has no support', async () => {

@@ -9,6 +9,36 @@ function task (name, x, y, z, properties = {}) {
   return { id: `${x},${y},${z}`, name, state: block.stateId, pos: new Vec3(x, y, z) }
 }
 
+test('explicit decoration support retains original minecart IDs and still rejects unknown entities', () => {
+  const plan = {
+    version: '1.21.4',
+    origin: { x: 0, y: 0, z: 0 },
+    sourceMin: { x: 0, y: 0, z: 0 },
+    tasks: [task('stone', 0, 0, 0), task('rail', 3, 0, 0)],
+    entities: [
+      { regionPosition: { x: 0, y: 0, z: 0 }, data: { id: 'minecraft:armor_stand', Pos: [0.5, 1, 0.5], Rotation: [0, 0] } },
+      { regionPosition: { x: 0, y: 0, z: 0 }, data: { id: 'minecraft:minecart', Pos: [3.5, 0.0625, 0.5] } }
+    ]
+  }
+  assert.throws(() => normalizeMinecartEntities(plan), /Unsupported entity/)
+  const carts = normalizeMinecartEntities(plan, { allowDecorations: true })
+  assert.equal(carts.length, 1)
+  assert.equal(carts[0].id, 'entity:1:minecart')
+  plan.entities.push({ regionPosition: { x: 0, y: 0, z: 0 }, data: { id: 'minecraft:pig', Pos: [1.5, 1, 0.5] } })
+  assert.throws(() => normalizeMinecartEntities(plan, { allowDecorations: true }), /Unsupported entity/)
+})
+
+test('explicit decoration support accepts direct Sponge entities and glowing frames', () => {
+  const plan = {
+    version: '1.21.4',
+    origin: { x: 0, y: 0, z: 0 },
+    sourceMin: { x: 0, y: 0, z: 0 },
+    tasks: [],
+    entities: [{ id: 'minecraft:armor_stand', Pos: [0.5, 1, 0.5] }, { regionPosition: { x: 0, y: 0, z: 0 }, data: { id: 'minecraft:glow_item_frame', Pos: [2.5, 1.5, 0.03125], Facing: 2 } }]
+  }
+  assert.deepEqual(normalizeMinecartEntities(plan, { allowDecorations: true }), [])
+})
+
 test('projects negative-size region entities from Position and associates the physical rail layer', () => {
   const plan = {
     version: '1.21.4',
