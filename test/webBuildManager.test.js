@@ -83,7 +83,7 @@ test('MIDI uploads compile into registered downloadable schematics and reuse the
   const args = spawned[0].args
   assert.equal(args[args.indexOf('--schematic') + 1], path.join(directory, 'blueprint.schem'))
   assert.equal(args[args.indexOf('--bots') + 1], '7')
-  assert.equal(args[args.indexOf('--origin') + 1], '200,64,200')
+  assert.ok(args.includes('--origin=200,64,200'))
 })
 
 test('failed MIDI conversion removes source data and never registers a download', async t => {
@@ -115,6 +115,22 @@ test('launches 100 physical workers without truncating the requested count', asy
   assert.equal((await manager.snapshot()).job.bots, 100)
 })
 
+test('web origin arguments reach the real CLI parser with negative coordinates intact', async t => {
+  const { parseOptions } = require('../examples/strictBuilder')
+  for (const originMode of ['schematic', 'minimum']) {
+    for (const origin of [{ x: -1000, y: 64, z: 1000 }, { x: -1000, y: -32, z: -1000 }, { x: 1000, y: -32, z: -1000 }]) {
+      await t.test(`${originMode} ${origin.x},${origin.y},${origin.z}`, async t => {
+        const { start, spawned } = await fixture(t)
+        await start({ originMode, origin, bots: 100 })
+        await until(() => spawned.length === 1)
+        const parsed = parseOptions(spawned[0].args.slice(1))
+        assert.deepEqual(originMode === 'schematic' ? parsed.schematicOrigin : parsed.origin, origin)
+        assert.equal(parsed.bots, 100)
+      })
+    }
+  }
+})
+
 test('reserves one job during attachment and starts the fixed CLI with physical worker options', async t => {
   let release
   const attaching = new Promise(resolve => { release = resolve })
@@ -127,7 +143,7 @@ test('reserves one job during attachment and starts the fixed CLI with physical 
   const { command, args, options } = spawned[0]
   assert.equal(command, process.execPath)
   assert.equal(args[0], path.join(rootDir, 'examples/strictBuilder.js'))
-  assert.equal(args[args.indexOf('--schematic-origin') + 1], '128,64,128')
+  assert.ok(args.includes('--schematic-origin=128,64,128'))
   assert.equal(args[args.indexOf('--bots') + 1], '5')
   assert.ok(args.includes('--prepare-workers'))
   assert.equal(args[args.indexOf('--port') + 1], '25566')
